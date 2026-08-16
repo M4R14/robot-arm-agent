@@ -10,9 +10,11 @@ requirements.
 
 Credentials load from `.env` at the repo root (docker compose loads it
 automatically for `${VAR}` substitution in `docker-compose.yml`) — the
-default provider/model (`openrouter` / `google/gemma-4-31b-it:free`) is
-baked into the image at `ai-agent/settings.json`. `.env` holds a real key
-and is gitignored; treat it as a secret, don't commit or share it.
+default provider/model (`openrouter` / `moonshotai/kimi-k2.6`) is baked
+into the image at `ai-agent/settings.json`, along with a low
+(`temperature: 0.2`) sampling override for more deterministic tool
+calls. `.env` holds a real key and is gitignored; treat it as a secret,
+don't commit or share it.
 
 ```bash
 docker compose up --build
@@ -26,10 +28,23 @@ docker compose attach agent
 ```
 
 Try: "read the arm state, then move joint 0 to 45 degrees" — expect
-exactly two tool calls (`get_arm_state`, `move_joint`). Note: OpenRouter's
-free Gemma model is shared/rate-limited upstream — retries happen
-automatically, but for reliable use, set `defaultModel` in
-`ai-agent/settings.json` to a paid model or your own provider key.
+exactly two tool calls (`get_arm_state`, `move_joint`). The agent also
+loads [`ai-agent/AGENTS.md`](ai-agent/AGENTS.md) (baked into the image as
+global instructions, so it applies without a project-trust prompt) —
+workflow guidance like "call `wait_for_arm` after a move before
+depending on it" and worked examples for pick-and-place. Every tool call
+is logged to the agent's stdout (`docker compose logs agent`) as
+`[tool] <timestamp> -> name method path` / `<- name ok (Nms)` for
+debugging.
+
+The extension itself is defensive about `sim` being unreachable or slow:
+every call has a 10s timeout, transient failures (network errors, 5xx)
+retry twice with backoff — but a real rejection (4xx, e.g. bad
+`joint_id`) never retries, since retrying an identical bad request just
+fails identically. It also caches `/capabilities` on first use and
+rejects obviously-invalid `joint_id`s or wildly-out-of-reach poses
+client-side (logged as `CLIENT-SIDE REJECT`) before ever calling `sim`,
+saving a round trip on requests that can't possibly succeed.
 
 ## Watching the arm move
 
@@ -47,14 +62,24 @@ every poll, and self-healing (exponential-backoff restart) if the stream
 ever dies.
 
 The window shows:
-- the arm's **actual** pose, driven by a real position-control motor +
-  `stepSimulation` so it eases into place instead of teleporting between
-  updates;
-- a translucent **ghost** of the arm at its *commanded target* pose, so
-  you can see how far an in-flight move still has to go;
-- an on-screen overlay of `sim`'s own state summary, grip force, and the
-  last rejected command's error (if any), turning red — and showing a
-  "STALE" warning with the age in seconds — if the stream goes quiet.
+- the arm's **actual** pose (solid), driven by a real position-control
+  motor + `stepSimulation` so it eases into place instead of teleporting
+  between updates;
+- a translucent blue **ghost** of the arm at its *commanded target*
+  pose, so you can see how far an in-flight move still has to go;
+- a small **red sphere** at the end-effector position, plus an **RGB
+  axis triad** (X red, Y green, Z blue) showing its orientation;
+- a legend explaining the above, plus camera controls;
+- an on-screen overlay of `sim`'s own state summary, grip force, render
+  FPS, and state-stream age (to tell a slow viewer from a slow sim
+  connection) — the summary line turns red, with a "STALE" warning
+  showing the age in seconds, if the stream goes quiet, and briefly
+  **flashes yellow** when a *new* error first appears (hard to miss even
+  if you glanced away), with the last rejected command's error appended.
+
+The overlay text and axis triad redraw at a throttled 5Hz (motion itself
+still updates at the full 60Hz render rate) — no point re-uploading debug
+text/lines faster than anyone can read them.
 
 Camera: mouse drag orbits, scroll zooms, ctrl+drag pans (PyBullet's
 built-in GUI navigation). Keyboard: `1`/`2`/`3`/`4` jump to
@@ -76,15 +101,20 @@ subprocess rather than leaving it orphaned).
 
 | Tool | What it does |
 |---|---|
-| `get_arm_state` | Joint angles, velocities, applied torques, commanded targets, `reached` flags, end-effector position |
+| `get_arm_state` | Joint angles, velocities, applied torques, commanded targets, `reached` flags, end-effector position/orientation, grip force, summary, last error |
+| `get_arm_capabilities` | Static joint limits, reach envelope, safety thresholds, timing constants |
 | `wait_for_arm` | Block until the arm (or specific joints) reaches its target, or timeout |
-| `move_joint` / `move_joints` | Move one or several joints to target angles (degrees); batched moves arrive together |
+| `move_joint` / `move_joints` | Move one or several joints to target angles (degrees, absolute or `relative`); batched moves arrive together |
 | `preview_move_joint` / `preview_move_to_pose` | Dry-run validation — check if a move would succeed, without moving the arm |
+| `preview_pose_candidates` | Same dry-run check for several poses in one call, instead of previewing one at a time |
 | `move_to_pose` | Move the end effector to (x, y, z), optional roll/pitch/yaw, via inverse kinematics |
+| `move_trajectory` | Move through a sequence of poses in order, stopping at the first one that fails |
 | `grip` / `release_gripper` | Set grip force / release (current placeholder URDF has no gripper actuator — records the value) |
 | `pick_and_place` | Composite: move to pick pose → grip → move to place pose → release, blocking until done |
-| `stop_arm` | Immediately halt all joint motion in place |
-| `reset_environment` | Reset the simulation to its home pose |
+| `stop_arm` | Immediately halt joint motion in place (all joints, or a specific subset) |
+| `reset_environment` | Reset the simulation to its home pose (also clears rejected-command history) |
+| `get_rejected_history` | Last 10 rejected commands and why, so the agent can check what it already tried |
+| `get_error_recovery_hints` | Structured, sim-sourced recovery guidance per `error_code` |
 
 Every move is validated server-side before it ever reaches a motor: clamped to
 the real per-joint hardware limits read from the URDF (not just a generic
@@ -104,7 +134,7 @@ edit `defaultProvider`/`defaultModel` in
 [ai-agent/settings.json](ai-agent/settings.json) (baked into the image
 at `/root/.pi/agent/settings.json`, so it applies without a project-trust
 prompt) and set the matching key in `.env`. No changes to `robot-arm/` or
-`ai-agent/extensions/robot-arm-extension.ts` are needed.
+`ai-agent/extensions/robot-arm-extension/` are needed.
 
 ## Verifying isolation
 
@@ -123,7 +153,11 @@ docker compose exec agent node -e "fetch('http://sim:8000/openapi.json').then(r=
 ai-arm/
 ├── SPEC.md
 ├── docker-compose.yml
-├── watch-arm.py           local 3D viewer (host-side, read-only)
+├── watch-arm.py           local 3D viewer entrypoint (host-side, read-only)
+├── viewer/
+│   ├── state_stream.py     background /state polling, thread-safe snapshots
+│   ├── camera.py            presets + keyboard shortcuts
+│   └── overlay.py            axis triad, overlay text/color, error-flash logic
 ├── robot-arm/            sim — Container A
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -149,5 +183,12 @@ ai-arm/
 └── ai-agent/              agent — Container B
     ├── Dockerfile
     ├── package.json
-    └── extensions/robot-arm-extension.ts
+    ├── AGENTS.md            workflow guidance + examples, loaded as global instructions
+    └── extensions/
+        └── robot-arm-extension/   directory-style extension (pi's "index.ts + helpers" pattern)
+            ├── index.ts             composition root — registers each tool group
+            ├── support/               sim-client.ts (HTTP+retry+timeout+logging),
+            │                            validation.ts (client-side pre-checks), schema.ts
+            └── tools/                   one file per resource group, mirrors
+                                           robot-arm/app/arm/routes/ 1:1
 ```

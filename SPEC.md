@@ -84,28 +84,34 @@ as code.
 | Method | Path                   | Request body | Response | Notes |
 |--------|------------------------|--------------|----------|-------|
 | GET    | `/health`              | — | `{ ok: bool }` | for `docker compose` healthcheck |
-| GET    | `/state`               | — | `{ joints: [{joint_id, angle_deg, velocity_deg_s, applied_torque, target_angle_deg, reached}], end_effector_position: [x,y,z], grip_force: float, last_error?: {error_code, message}, summary: str }` | read-only; `last_error` clears on the next successful mutating command |
-| GET    | `/capabilities`        | — | `{ joint_ids, joint_limits: [{joint_id, min_deg, max_deg}], max_force, max_joint_velocity_deg_s, singularity_condition_threshold, ik_reachable_tolerance_m, min_command_interval_s, default_wait_timeout_s, max_wait_timeout_s, home_pose_deg }` | read-only; static limits/tuning, so a caller can plan instead of guessing |
+| GET    | `/state`               | — | `{ joints: [{joint_id, angle_deg, velocity_deg_s, applied_torque, target_angle_deg, reached}], end_effector_position: [x,y,z], end_effector_orientation: [x,y,z,w] (quaternion), grip_force: float, last_error?: {error_code, message}, summary: str }` | read-only; `last_error` clears on the next successful mutating command |
+| GET    | `/capabilities`        | — | `{ urdf_path, joint_ids, joint_limits: [{joint_id, min_deg, max_deg}], reach_min_m, reach_max_m, max_force, max_joint_velocity_deg_s, singularity_condition_threshold, ik_reachable_tolerance_m, min_command_interval_s, default_wait_timeout_s, max_wait_timeout_s, home_pose_deg }` | read-only; static limits/tuning, so a caller can plan instead of guessing. `reach_min_m`/`reach_max_m` are estimated by sampling random valid joint configurations (no closed-form workspace boundary for a 7-DoF arm), cached until the next `/reset` |
 | POST   | `/wait_reached`        | `{ joint_ids?: int[], timeout_s?: float }` | `{ reached: bool, timed_out: bool, joints: [...] }` | read-only; blocks (server-clamped timeout) until all named joints reach their commanded target |
 | POST   | `/move_joint`          | `{ joint_id: int, target_angle_deg: float, relative?: bool, command_id?: str }` | `{ ok: bool, message: str }` | clamp to the tighter of `[JOINT_ANGLE_MIN_DEG, JOINT_ANGLE_MAX_DEG]` and the joint's real URDF limit; validate `joint_id` in range; reject on self-collision or near-singularity; `relative` adds to the joint's current angle instead of an absolute target |
 | POST   | `/move_joints`         | `{ targets: [{joint_id, target_angle_deg}], relative?: bool, command_id?: str }` | `{ ok: bool, message: str }` | batch of `/move_joint`, validated as one resulting pose, synchronized arrival |
 | POST   | `/preview_move_joint`  | `{ joint_id: int, target_angle_deg: float, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_joint` without moving the arm |
 | POST   | `/move_to_pose`        | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool, command_id? }` | `{ ok: bool, message: str }` | inverse kinematics; reject if unreachable, self-colliding, or near-singular; `relative` adds (x,y,z) to the current end-effector position (orientation stays absolute) |
 | POST   | `/preview_move_to_pose`| `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_to_pose` without moving the arm |
+| POST   | `/preview_candidates`  | `{ candidates: PoseTarget[] }` | `{ results: [{index, ok, reason?}] }` | read-only; runs `/preview_move_to_pose` validation on several poses in one call — evaluating options is one HTTP call, not N |
 | POST   | `/move_trajectory`     | `{ waypoints: PoseTarget[], command_id? }` | `{ ok: bool, waypoints: [{index, ok, reached, reason?}], message: str }` | moves through poses in order, waiting for each; stops at the first waypoint that fails validation rather than skipping it |
 | POST   | `/grip`                | `{ force: float, command_id?: str }` | `{ ok: bool, message: str }` | clamp `force` to `[0, MAX_FORCE]`; current placeholder URDF has no gripper actuator |
 | POST   | `/release`             | — | `{ ok: bool, message: str }` | alias for `/grip` with `force: 0` |
 | POST   | `/pick_and_place`      | `{ pick: PoseTarget, place: PoseTarget, grip_force: float, command_id? }` | `{ ok, reached_pick, reached_place, message }` | composite: move to pick → grip → move to place → release; blocks until done |
 | POST   | `/stop`                | `{ joint_ids?: int[] }` (body optional) | `{ ok: bool, message: str }` | halts named joints (or all, if omitted) at their current position; never rate-limited |
-| POST   | `/reset`               | — | `{ ok: bool, message: str }` | reset simulation to `HOME_POSE_DEG` |
+| POST   | `/reset`               | — | `{ ok: bool, message: str }` | reset simulation to `HOME_POSE_DEG`; also clears `/rejected_history` |
+| GET    | `/rejected_history`    | — | `{ entries: [{error_code, message, details}] }` | read-only; last `REJECTED_HISTORY_MAX` (10) rejected commands, oldest first, so a caller can check what it already tried before repeating a mistake |
+| GET    | `/error_recovery_hints`| — | `{ hints: {error_code: str} }` | read-only; static, structured recovery guidance per `error_code` — single-sourced here rather than duplicated in caller instructions |
 
 All mutating endpoints accept an optional `command_id: str`; a repeated
 `command_id` within a short TTL replays the cached response instead of
 re-executing (idempotency for caller retries).
 
-Error responses use `{ detail: { error_code: str, message: str } }` with
-`error_code` one of `JOINT_OUT_OF_RANGE`, `UNREACHABLE_POSE`,
-`SELF_COLLISION`, `NEAR_SINGULARITY`, `RATE_LIMITED`.
+Error responses use `{ detail: { error_code: str, message: str, ...details } }`
+with `error_code` one of `JOINT_OUT_OF_RANGE`, `UNREACHABLE_POSE`,
+`SELF_COLLISION`, `NEAR_SINGULARITY`, `RATE_LIMITED`. Some errors add
+actionable fields beyond `message`: `UNREACHABLE_POSE` adds
+`closest_achievable_position: [x,y,z]`; `RATE_LIMITED` adds
+`retry_after_s: float`.
 
 ### 4.4 Safety limits (server-side constants, not caller-supplied)
 - `JOINT_ANGLE_MIN_DEG` / `JOINT_ANGLE_MAX_DEG`: generic safety ceiling,
@@ -136,14 +142,17 @@ target, even one that looks in-range.
 ### 5.1 Stack
 - Node.js 22
 - `@earendil-works/pi-coding-agent` (pi), installed globally
-- A single TypeScript extension file registering the tool set
+- A single TypeScript extension registering the tool set (pi supports
+  the "directory with index.ts" extension style for multi-file
+  extensions — see `docs/extensions.md` — so internal code organization
+  across files is fine; what matters is exactly one extension is loaded)
 
 ### 5.2 Responsibilities
 - Run `pi` with `--no-builtin-tools` (strips `read`, `write`, `edit`,
   `bash`, `grep`, `find`, `ls` entirely — these must not exist for the
   LLM under any configuration).
-- Load exactly one extension (`robot-arm-extension.ts`) that registers
-  the tool set in §5.3.
+- Load exactly one extension (`robot-arm-extension/index.ts`) that
+  registers the tool set in §5.3.
 - Each tool implementation must do nothing except: validate its typed
   input against its schema, make one HTTP call to `sim` at
   `SIM_URL` (env var, default `http://sim:8000`), and return the result.
@@ -165,12 +174,15 @@ target, even one that looks in-range.
 | `preview_move_joint`   | `{ joint_id: int, target_angle_deg: number, relative?: boolean }` | `POST /preview_move_joint` |
 | `move_to_pose`         | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /move_to_pose` |
 | `preview_move_to_pose` | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /preview_move_to_pose` |
+| `preview_pose_candidates` | `{ candidates: PoseTarget[] }` | `POST /preview_candidates` |
 | `move_trajectory`      | `{ waypoints: PoseTarget[] }` | `POST /move_trajectory` |
 | `grip`                 | `{ force: number }` | `POST /grip` |
 | `release_gripper`      | *(none)* | `POST /release` |
 | `pick_and_place`       | `{ pick: PoseTarget, place: PoseTarget, grip_force: number }` | `POST /pick_and_place` |
 | `stop_arm`             | `{ joint_ids?: int[] }` | `POST /stop` |
 | `reset_environment`    | *(none)* | `POST /reset` |
+| `get_rejected_history` | *(none)* | `GET /rejected_history` |
+| `get_error_recovery_hints` | *(none)* | `GET /error_recovery_hints` |
 
 `move_joint`, `move_joints`, `move_to_pose`, `move_trajectory`, `grip`, and
 `pick_and_place` also pass the harness's `toolCallId` as `command_id` for
@@ -218,7 +230,7 @@ No tool beyond this set may be registered without updating this spec.
    fails because no such tool is registered.
 7. Swapping `ANTHROPIC_API_KEY` for `OPENAI_API_KEY` (+ provider config)
    requires no changes to `sim/` or to the tool definitions in
-   `robot-arm-extension.ts`.
+   `robot-arm-extension/`.
 
 ## 8. Reference implementation
 
@@ -234,7 +246,10 @@ ai-arm/
 ├── ai-agent/              (agent, Container B)
 │   ├── Dockerfile
 │   ├── package.json
-│   └── extensions/robot-arm-extension.ts
+│   └── extensions/robot-arm-extension/
+│       ├── index.ts       composition root
+│       ├── support/         sim-client.ts, validation.ts, schema.ts
+│       └── tools/            one file per resource group
 └── README.md
 ```
 

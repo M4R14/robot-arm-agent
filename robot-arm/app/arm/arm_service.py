@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 from .adapters.pybullet_adapter import JointAngle, PyBulletAdapter
 from .constants import (
     DEFAULT_WAIT_TIMEOUT_S,
+    ERROR_RECOVERY_HINTS,
     HOME_POSE_DEG,
     IK_REACHABLE_TOLERANCE_M,
     JOINT_REACHED_TOLERANCE_DEG,
@@ -20,6 +21,7 @@ from .constants import (
     MAX_JOINT_VELOCITY_DEG_S,
     MAX_WAIT_TIMEOUT_S,
     MIN_COMMAND_INTERVAL_S,
+    REJECTED_HISTORY_MAX,
     RESET_SETTLE_STEPS,
     SIM_HZ,
     SINGULARITY_CONDITION_THRESHOLD,
@@ -52,6 +54,7 @@ class ArmService:
         self._stop_stepping = threading.Event()
         self._target_angles_deg: Dict[int, float] = {}
         self._last_error: Optional[Dict[str, str]] = None
+        self._rejected_history: List[Dict] = []
         self.grip_force = 0.0
         self._drive_to_home_pose()
 
@@ -91,8 +94,16 @@ class ArmService:
     # block (e.g. right after a locked block raises and releases the lock).
 
     def _note_error(self, exc: Exception) -> None:
+        entry = {
+            "error_code": getattr(exc, "error_code", "ERROR"),
+            "message": str(exc),
+            "details": getattr(exc, "details", {}),
+        }
         with self._lock:
-            self._last_error = {"error_code": getattr(exc, "error_code", "ERROR"), "message": str(exc)}
+            self._last_error = {"error_code": entry["error_code"], "message": entry["message"]}
+            self._rejected_history.append(entry)
+            if len(self._rejected_history) > REJECTED_HISTORY_MAX:
+                self._rejected_history.pop(0)
 
     def _note_success(self) -> None:
         with self._lock:
@@ -100,13 +111,16 @@ class ArmService:
 
     # --- reads -------------------------------------------------------------
 
-    def get_state(self) -> Tuple[List[JointAngle], List[float], Dict[int, float], Optional[Dict[str, str]]]:
+    def get_state(
+        self,
+    ) -> Tuple[List[JointAngle], List[float], List[float], Dict[int, float], Optional[Dict[str, str]]]:
         with self._lock:
             joints = self._adapter.get_joint_angles_deg()
             ee_position = self._adapter.get_end_effector_position()
+            ee_orientation = self._adapter.get_end_effector_orientation()
             targets = dict(self._target_angles_deg)
             last_error = dict(self._last_error) if self._last_error else None
-        return joints, ee_position, targets, last_error
+        return joints, ee_position, ee_orientation, targets, last_error
 
     def is_reached(self, joint_id: int, angle_deg: float, targets: Dict[int, float]) -> bool:
         target = targets.get(joint_id)
@@ -120,7 +134,7 @@ class ArmService:
         clamped_timeout = clamp(timeout_s if timeout_s is not None else DEFAULT_WAIT_TIMEOUT_S, 0.0, MAX_WAIT_TIMEOUT_S)
         deadline = time.monotonic() + clamped_timeout
         while True:
-            joints, _ee_position, targets, _last_error = self.get_state()
+            joints, _ee_position, _ee_orientation, targets, _last_error = self.get_state()
             relevant = [j for j in joints if joint_ids is None or j.joint_id in joint_ids]
             if all(self.is_reached(j.joint_id, j.angle_deg, targets) for j in relevant):
                 return True, False, joints, targets
@@ -135,10 +149,13 @@ class ArmService:
                 {"joint_id": j, "min_deg": lo, "max_deg": hi}
                 for j, (lo, hi) in self._adapter.joint_limits_deg.items()
             ]
+            reach_min_m, reach_max_m = self._adapter.estimate_reach_envelope_m()
         return {
             "urdf_path": URDF_PATH,
             "joint_ids": joint_ids,
             "joint_limits": joint_limits,
+            "reach_min_m": reach_min_m,
+            "reach_max_m": reach_max_m,
             "max_force": MAX_FORCE,
             "max_joint_velocity_deg_s": MAX_JOINT_VELOCITY_DEG_S,
             "singularity_condition_threshold": SINGULARITY_CONDITION_THRESHOLD,
@@ -148,6 +165,16 @@ class ArmService:
             "max_wait_timeout_s": MAX_WAIT_TIMEOUT_S,
             "home_pose_deg": dict(HOME_POSE_DEG),
         }
+
+    def get_rejected_history(self) -> List[Dict]:
+        with self._lock:
+            return [dict(entry) for entry in self._rejected_history]
+
+    def get_error_recovery_hints(self) -> Dict[str, str]:
+        return dict(ERROR_RECOVERY_HINTS)
+
+    def preview_candidates(self, candidates: List[Dict[str, Optional[float]]]) -> List[Tuple[bool, Optional[str]]]:
+        return [self.preview_move_to_pose(**candidate) for candidate in candidates]
 
     # --- move_joint ----------------------------------------------------------
 
@@ -379,5 +406,6 @@ class ArmService:
             self._target_angles_deg.clear()
             self.grip_force = 0.0
             self._last_error = None
+            self._rejected_history.clear()
             self._idempotency_cache.clear()
             self._drive_to_home_pose()

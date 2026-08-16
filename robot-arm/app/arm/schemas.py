@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ class LastError(BaseModel):
 class StateResponse(BaseModel):
     joints: List[JointState]
     end_effector_position: List[float]
+    end_effector_orientation: List[float]
     grip_force: float
     last_error: Optional[LastError] = None
     summary: str
@@ -138,6 +139,8 @@ class CapabilitiesResponse(BaseModel):
     urdf_path: str
     joint_ids: List[int]
     joint_limits: List[JointLimit]
+    reach_min_m: float
+    reach_max_m: float
     max_force: float
     max_joint_velocity_deg_s: float
     singularity_condition_threshold: float
@@ -146,6 +149,34 @@ class CapabilitiesResponse(BaseModel):
     default_wait_timeout_s: float
     max_wait_timeout_s: float
     home_pose_deg: Dict[int, float]
+
+
+class RejectedAttempt(BaseModel):
+    error_code: str
+    message: str
+    details: Dict[str, Any] = {}
+
+
+class RejectedHistoryResponse(BaseModel):
+    entries: List[RejectedAttempt]
+
+
+class ErrorRecoveryHintsResponse(BaseModel):
+    hints: Dict[str, str]
+
+
+class PreviewCandidatesRequest(BaseModel):
+    candidates: List[PoseTarget]
+
+
+class PreviewCandidateResult(BaseModel):
+    index: int
+    ok: bool
+    reason: Optional[str] = None
+
+
+class PreviewCandidatesResponse(BaseModel):
+    results: List[PreviewCandidateResult]
 
 
 class ActionResponse(BaseModel):

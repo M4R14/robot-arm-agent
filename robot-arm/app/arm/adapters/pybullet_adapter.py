@@ -9,6 +9,7 @@ move_to_pose and dry_run.
 """
 
 import math
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -39,9 +40,11 @@ class PyBulletAdapter:
         self.movable_joints: List[int] = []
         self.end_effector_link = 0
         self.joint_limits_deg: Dict[int, Tuple[float, float]] = {}
+        self._reach_envelope_m: Optional[Tuple[float, float]] = None
         self.load()
 
     def load(self) -> None:
+        self._reach_envelope_m = None  # joint limits may change with the model; drop any cached estimate
         p.resetSimulation(physicsClientId=self.client_id)
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.client_id)
         p.setGravity(0, 0, -9.8, physicsClientId=self.client_id)
@@ -87,6 +90,10 @@ class PyBulletAdapter:
 
     def get_end_effector_position(self) -> List[float]:
         return list(p.getLinkState(self.robot_id, self.end_effector_link, physicsClientId=self.client_id)[4])
+
+    def get_end_effector_orientation(self) -> List[float]:
+        """Quaternion [x, y, z, w] of the end-effector link's world orientation."""
+        return list(p.getLinkState(self.robot_id, self.end_effector_link, physicsClientId=self.client_id)[5])
 
     def set_joint_target_deg(self, joint_id: int, target_deg: float, max_velocity_deg_s: Optional[float] = None) -> None:
         p.setJointMotorControl2(
@@ -158,6 +165,38 @@ class PyBulletAdapter:
             p.resetJointState(self.robot_id, joint_id, angle_rad, physicsClientId=self.client_id)
 
         return ee_position, collision_free, condition_number
+
+    def estimate_reach_envelope_m(self, num_samples: int = 300) -> Tuple[float, float]:
+        """Samples random valid joint configurations and measures the
+        end-effector's distance from the base, to give a rough (min, max)
+        Cartesian reach — there's no simple analytic formula for a 7-DoF
+        arm's workspace boundary, so we estimate it kinematically instead.
+        Cached until the next `load()` since joint limits don't change
+        between resets of the same URDF.
+        """
+        if self._reach_envelope_m is not None:
+            return self._reach_envelope_m
+
+        original_rad = self.get_joint_positions_rad()
+        min_radius = float("inf")
+        max_radius = 0.0
+        for _ in range(num_samples):
+            for joint_id in self.movable_joints:
+                lower_deg, upper_deg = self.joint_limits_deg[joint_id]
+                p.resetJointState(
+                    self.robot_id, joint_id, math.radians(random.uniform(lower_deg, upper_deg)),
+                    physicsClientId=self.client_id,
+                )
+            x, y, z = self.get_end_effector_position()
+            radius = math.sqrt(x * x + y * y + z * z)
+            min_radius = min(min_radius, radius)
+            max_radius = max(max_radius, radius)
+
+        for joint_id, angle_rad in original_rad.items():
+            p.resetJointState(self.robot_id, joint_id, angle_rad, physicsClientId=self.client_id)
+
+        self._reach_envelope_m = (min_radius, max_radius)
+        return self._reach_envelope_m
 
     def disconnect(self) -> None:
         p.disconnect(physicsClientId=self.client_id)

@@ -61,3 +61,36 @@ WAIT_POLL_INTERVAL_S = 0.02
 # this window replays the cached response instead of re-executing.
 IDEMPOTENCY_TTL_S = 5.0
 IDEMPOTENCY_CACHE_MAX = 256
+
+# How many recent rejected commands /rejected_history keeps, so a caller
+# can check what it already tried (and why it failed) instead of
+# repeating the same mistake. Cleared on /reset.
+REJECTED_HISTORY_MAX = 10
+
+# Structured, single-sourced recovery guidance per error_code, exposed via
+# /error_recovery_hints — the caller doesn't need this baked into its own
+# prompt/instructions; it can just ask.
+ERROR_RECOVERY_HINTS: Dict[str, str] = {
+    "JOINT_OUT_OF_RANGE": (
+        "The joint_id itself is invalid, not the angle. Check get_arm_capabilities's "
+        "joint_ids for the valid set before retrying."
+    ),
+    "UNREACHABLE_POSE": (
+        "The response includes closest_achievable_position, the nearest point the arm "
+        "can actually reach. Retry toward that point (or somewhere near it), not the "
+        "original target."
+    ),
+    "SELF_COLLISION": (
+        "The resulting pose would hit the arm itself. Try an intermediate waypoint via "
+        "move_trajectory, or a different approach angle, instead of the same target again."
+    ),
+    "NEAR_SINGULARITY": (
+        "The target pose is kinematically unstable (e.g. arm fully extended). Change the "
+        "orientation or move to a nearby position with the elbow bent, rather than "
+        "retrying as-is."
+    ),
+    "RATE_LIMITED": (
+        "The response includes retry_after_s. Wait at least that long before retrying; "
+        "firing again immediately will just get rate-limited again."
+    ),
+}

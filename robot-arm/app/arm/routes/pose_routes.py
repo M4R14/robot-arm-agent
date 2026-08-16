@@ -3,7 +3,15 @@
 from fastapi import APIRouter
 
 from ..arm_service import ArmService
-from ..schemas import ActionResponse, MoveToPoseRequest, PreviewMoveToPoseRequest, PreviewResponse
+from ..schemas import (
+    ActionResponse,
+    MoveToPoseRequest,
+    PreviewCandidatesRequest,
+    PreviewCandidatesResponse,
+    PreviewCandidateResult,
+    PreviewMoveToPoseRequest,
+    PreviewResponse,
+)
 from ..support.error_mapping import raise_http
 from ..support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
 from ..support.idempotency import with_idempotency
@@ -29,5 +37,12 @@ def build_router(service: ArmService) -> APIRouter:
     def preview_move_to_pose(req: PreviewMoveToPoseRequest) -> PreviewResponse:
         ok, reason = service.preview_move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative)
         return PreviewResponse(ok=ok, reason=reason)
+
+    @router.post("/preview_candidates", response_model=PreviewCandidatesResponse)
+    def preview_candidates(req: PreviewCandidatesRequest) -> PreviewCandidatesResponse:
+        results = service.preview_candidates([c.model_dump() for c in req.candidates])
+        return PreviewCandidatesResponse(
+            results=[PreviewCandidateResult(index=i, ok=ok, reason=reason) for i, (ok, reason) in enumerate(results)]
+        )
 
     return router

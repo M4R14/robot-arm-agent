@@ -1,4 +1,19 @@
 {
   "defaultProvider": "openrouter",
-  "defaultModel": "moonshotai/kimi-k2.6"
+  "defaultModel": "moonshotai/kimi-k2.6",
+  "defaultThinkingLevel": "medium",
+  "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "moonshotai/kimi-k2.6": {
+          "samplingParams": {
+            "temperature": 0.2
+          }
+        }
+      }
+    }
+  },
+  "compaction": {
+    "keepRecentTokens": 40000
+  }
 }
