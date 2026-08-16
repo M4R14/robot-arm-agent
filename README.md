@@ -335,12 +335,15 @@ ai-arm/
 │           │     ├── exceptions.py     JointOutOfRangeError, UnreachablePoseError, ...
 │           │     ├── motion_validator.py, motion_driver.py, rate_limiter.py, util.py
 │           │     ├── joint_commands.py, pose_commands.py   (per-resource command logic)
-│           │     └── state_queries.py, capabilities_queries.py   (per-resource reads)
+│           │     ├── state_queries.py, capabilities_queries.py   (per-resource reads)
+│           │     └── stepping_clock.py   background physics-step thread lifecycle
 │           ├── application/
-│           │     └── arm_service.py   the one place ports get bound to concrete
-│           │                            driven adapters; lock, lifecycle,
-│           │                            rate-limit/error-recording wrapper around
-│           │                            every mutating command
+│           │     ├── arm_service.py   the one place ports get bound to concrete
+│           │     │                      driven adapters; lock + rate-limit wrapper
+│           │     │                      around every mutating command
+│           │     └── command_outcome_tracker.py   idempotency replay, last_error,
+│           │                            rejected_history, metrics — "what happened
+│           │                            to past commands," one cohesive concern
 │           └── adapters/
 │                 ├── driven/     implement domain/ports.py — secondary adapters,
 │                 │                 things the domain calls *out* to:

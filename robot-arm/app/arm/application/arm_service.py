@@ -11,24 +11,13 @@ adapter calls. Never trusts caller-supplied ranges.
 """
 
 import threading
-import time
 from typing import Dict, List, Optional, Tuple
-
-from loguru import logger
 
 from ..adapters.driven.idempotency_cache import IdempotencyCache
 from ..adapters.driven.metrics import Metrics
 from ..adapters.driven.pose_memory import PoseMemory
 from ..adapters.driven.pybullet_physics_adapter import PyBulletAdapter
-from ..constants import (
-    DEFAULT_WAIT_TIMEOUT_S,
-    ERROR_RECOVERY_HINTS,
-    HOME_POSE_DEG,
-    MAX_FORCE,
-    REJECTED_HISTORY_MAX,
-    RESET_SETTLE_STEPS,
-    SIM_HZ,
-)
+from ..constants import DEFAULT_WAIT_TIMEOUT_S, HOME_POSE_DEG, MAX_FORCE, RESET_SETTLE_STEPS
 from ..domain.capabilities_queries import CapabilitiesQueries
 from ..domain.joint_commands import JointCommands
 from ..domain.motion_driver import SynchronizedMotionDriver
@@ -37,7 +26,9 @@ from ..domain.ports import ArmPhysicsPort, JointAngle, PoseMemoryPort
 from ..domain.pose_commands import PoseCommands
 from ..domain.rate_limiter import RateLimiter
 from ..domain.state_queries import StateQueries
+from ..domain.stepping_clock import SteppingClock
 from ..domain.util import clamp
+from .command_outcome_tracker import CommandOutcomeTracker
 
 
 class ArmService:
@@ -57,18 +48,15 @@ class ArmService:
         # classes.
         self._adapter = adapter or PyBulletAdapter()
         self._rate_limiter = rate_limiter or RateLimiter()
-        self._idempotency_cache = idempotency_cache or IdempotencyCache()
         self._validator = validator or MotionValidator(self._adapter, pose_memory or PoseMemory())
         self._driver = driver or SynchronizedMotionDriver(self._adapter)
-        self._metrics = metrics or Metrics()
+        self._outcome = CommandOutcomeTracker(self._lock, idempotency_cache or IdempotencyCache(), metrics or Metrics())
+        self._stepping_clock = SteppingClock(self._lock, self._adapter)
         self._joint_commands = JointCommands(self._adapter, self._validator, self._driver)
         self._pose_commands = PoseCommands(self._adapter, self._validator, self._driver)
         self._state_queries = StateQueries(self._lock, self._adapter)
         self._capabilities_queries = CapabilitiesQueries(self._lock, self._adapter)
-        self._stop_stepping = threading.Event()
         self._target_angles_deg: Dict[int, float] = {}
-        self._last_error: Optional[Dict[str, str]] = None
-        self._rejected_history: List[Dict] = []
         self.grip_force = 0.0
         self._drive_to_home_pose()
 
@@ -82,64 +70,46 @@ class ArmService:
         self._target_angles_deg = dict(HOME_POSE_DEG)
 
     def start_stepping(self) -> None:
-        threading.Thread(target=self._stepping_loop, daemon=True).start()
-
-    def _stepping_loop(self) -> None:
-        while not self._stop_stepping.is_set():
-            with self._lock:
-                self._adapter.step()
-            time.sleep(1.0 / SIM_HZ)
+        self._stepping_clock.start()
 
     def shutdown(self) -> None:
-        self._stop_stepping.set()
+        self._stepping_clock.stop()
         with self._lock:
             self._adapter.disconnect()
 
     # --- idempotency (delegated) ------------------------------------------
 
     def check_idempotent(self, command_id: Optional[str]) -> Optional[dict]:
-        return self._idempotency_cache.check(command_id)
+        return self._outcome.check_idempotent(command_id)
 
     def remember_idempotent(self, command_id: Optional[str], payload: dict) -> None:
-        self._idempotency_cache.remember(command_id, payload)
-
-    # --- last-command-error tracking ----------------------------------------
-    # Self-locking so they're safe to call from outside any `with self._lock`
-    # block (e.g. right after a locked block raises and releases the lock).
-
-    def _note_error(self, exc: Exception) -> None:
-        entry = {
-            "error_code": getattr(exc, "error_code", "ERROR"),
-            "message": str(exc),
-            "details": getattr(exc, "details", {}),
-        }
-        with self._lock:
-            self._last_error = {"error_code": entry["error_code"], "message": entry["message"]}
-            self._rejected_history.append(entry)
-            if len(self._rejected_history) > REJECTED_HISTORY_MAX:
-                self._rejected_history.pop(0)
-        self._metrics.note_rejected(entry["error_code"])
-        logger.warning("command rejected: {} — {}", entry["error_code"], entry["message"])
-
-    def _note_success(self) -> None:
-        with self._lock:
-            self._last_error = None
-        self._metrics.note_accepted()
-        logger.debug("command accepted")
+        self._outcome.remember_idempotent(command_id, payload)
 
     def get_metrics(self) -> Dict:
-        return self._metrics.snapshot()
+        return self._outcome.get_metrics()
 
-    # --- reads (delegated to StateQueries, plus ArmService's own
+    # --- guarded-command helper -----------------------------------------------
+    # Every mutating command needs "acquire lock, check rate limit, run" —
+    # this factors that out so each command method states only what it does.
+    # Recording success/failure is CommandOutcomeTracker.guarded(); kept
+    # separate because a few commands (pick_and_place, move_trajectory) need
+    # custom locking — multiple locked sections with unlocked work between
+    # them — so they use _outcome.guarded() alone and call
+    # _locked_rate_limited() themselves where it fits.
+
+    def _locked_rate_limited(self, fn):
+        with self._lock:
+            self._rate_limiter.check()
+            return fn()
+
+    # --- reads (delegated to StateQueries, plus the outcome tracker's
     # last_error which StateQueries doesn't know about) ---------------------
 
     def get_state(
         self,
     ) -> Tuple[List[JointAngle], List[float], List[float], Dict[int, float], Optional[Dict[str, str]]]:
         joints, ee_position, ee_orientation, targets = self._state_queries.read_full_state(self._target_angles_deg)
-        with self._lock:
-            last_error = dict(self._last_error) if self._last_error else None
-        return joints, ee_position, ee_orientation, targets, last_error
+        return joints, ee_position, ee_orientation, targets, self._outcome.get_last_error()
 
     def is_reached(self, joint_id: int, angle_deg: float, targets: Dict[int, float]) -> bool:
         return self._state_queries.is_reached(joint_id, angle_deg, targets)
@@ -153,24 +123,19 @@ class ArmService:
         return self._capabilities_queries.get_capabilities()
 
     def get_rejected_history(self) -> List[Dict]:
-        with self._lock:
-            return [dict(entry) for entry in self._rejected_history]
+        return self._outcome.get_rejected_history()
 
     def get_error_recovery_hints(self) -> Dict[str, str]:
-        return dict(ERROR_RECOVERY_HINTS)
+        return self._outcome.get_error_recovery_hints()
 
     # --- move_joint (delegated to JointCommands) ------------------------------
 
     def move_joint(self, joint_id: int, target_angle_deg: float, relative: bool = False) -> float:
-        try:
-            with self._lock:
-                self._rate_limiter.check()
-                result = self._joint_commands.move_joint_locked(joint_id, target_angle_deg, relative, self._target_angles_deg)
-        except Exception as exc:
-            self._note_error(exc)
-            raise
-        self._note_success()
-        return result
+        return self._outcome.guarded(
+            lambda: self._locked_rate_limited(
+                lambda: self._joint_commands.move_joint_locked(joint_id, target_angle_deg, relative, self._target_angles_deg)
+            )
+        )
 
     def preview_move_joint(
         self, joint_id: int, target_angle_deg: float, relative: bool = False
@@ -181,15 +146,11 @@ class ArmService:
     # --- move_joints (batch, delegated to JointCommands) -----------------------
 
     def move_joints(self, targets: List[Tuple[int, float]], relative: bool = False) -> Dict[int, float]:
-        try:
-            with self._lock:
-                self._rate_limiter.check()
-                result = self._joint_commands.move_joints_locked(targets, relative, self._target_angles_deg)
-        except Exception as exc:
-            self._note_error(exc)
-            raise
-        self._note_success()
-        return result
+        return self._outcome.guarded(
+            lambda: self._locked_rate_limited(
+                lambda: self._joint_commands.move_joints_locked(targets, relative, self._target_angles_deg)
+            )
+        )
 
     # --- move_to_pose (delegated to PoseCommands) -------------------------------
 
@@ -203,16 +164,13 @@ class ArmService:
         yaw_deg: Optional[float] = None,
         relative: bool = False,
     ) -> None:
-        try:
-            with self._lock:
-                self._rate_limiter.check()
-                self._pose_commands.move_to_pose_locked(
+        self._outcome.guarded(
+            lambda: self._locked_rate_limited(
+                lambda: self._pose_commands.move_to_pose_locked(
                     x, y, z, roll_deg, pitch_deg, yaw_deg, relative, self._target_angles_deg
                 )
-        except Exception as exc:
-            self._note_error(exc)
-            raise
-        self._note_success()
+            )
+        )
 
     def preview_move_to_pose(
         self,
@@ -252,22 +210,22 @@ class ArmService:
         all_ok = True
         for index, waypoint in enumerate(waypoints):
             try:
-                with self._lock:
-                    self._rate_limiter.check()
-                    self._pose_commands.move_to_pose_locked(
+                self._locked_rate_limited(
+                    lambda waypoint=waypoint: self._pose_commands.move_to_pose_locked(
                         waypoint.get("x"), waypoint.get("y"), waypoint.get("z"),
                         waypoint.get("roll_deg"), waypoint.get("pitch_deg"), waypoint.get("yaw_deg"),
                         waypoint.get("relative", False), self._target_angles_deg,
                     )
+                )
             except Exception as exc:
-                self._note_error(exc)
+                self._outcome.note_error(exc)
                 results.append({"index": index, "ok": False, "reached": False, "reason": str(exc)})
                 all_ok = False
                 break
             reached, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
             results.append({"index": index, "ok": True, "reached": reached, "reason": None})
         if all_ok:
-            self._note_success()
+            self._outcome.note_success()
         return results
 
     # --- grip ----------------------------------------------------------------
@@ -280,29 +238,24 @@ class ArmService:
         return clamped_force
 
     def grip(self, force: float) -> float:
-        try:
-            with self._lock:
-                self._rate_limiter.check()
-                result = self._grip_locked(force)
-        except Exception as exc:
-            self._note_error(exc)
-            raise
-        self._note_success()
-        return result
+        return self._outcome.guarded(lambda: self._locked_rate_limited(lambda: self._grip_locked(force)))
 
     # --- pick_and_place (macro, orchestrates PoseCommands + grip) --------------
 
     def pick_and_place(
         self, pick: Dict[str, Optional[float]], place: Dict[str, Optional[float]], grip_force: float
     ) -> Dict[str, bool]:
-        try:
-            with self._lock:
-                self._rate_limiter.check()
-                self._pose_commands.move_to_pose_locked(
+        # Multiple locked sections with unlocked wait_reached() calls between
+        # them, so this can't use _locked_rate_limited (one locked call) —
+        # only _outcome.guarded (success/failure recording) applies here.
+        def _do() -> Dict[str, bool]:
+            self._locked_rate_limited(
+                lambda: self._pose_commands.move_to_pose_locked(
                     pick.get("x"), pick.get("y"), pick.get("z"),
                     pick.get("roll_deg"), pick.get("pitch_deg"), pick.get("yaw_deg"),
                     pick.get("relative", False), self._target_angles_deg,
                 )
+            )
             reached_pick, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
 
             with self._lock:
@@ -318,11 +271,9 @@ class ArmService:
 
             with self._lock:
                 self._grip_locked(0.0)
-        except Exception as exc:
-            self._note_error(exc)
-            raise
-        self._note_success()
-        return {"reached_pick": reached_pick, "reached_place": reached_place}
+            return {"reached_pick": reached_pick, "reached_place": reached_place}
+
+        return self._outcome.guarded(_do)
 
     # --- stop (emergency, never rate-limited) -----------------------------------
 
@@ -343,7 +294,5 @@ class ArmService:
                 self._adapter.step()
             self._target_angles_deg.clear()
             self.grip_force = 0.0
-            self._last_error = None
-            self._rejected_history.clear()
-            self._idempotency_cache.clear()
             self._drive_to_home_pose()
+        self._outcome.clear()

@@ -108,7 +108,7 @@ All mutating endpoints accept an optional `command_id: str`; a repeated
 re-executing (idempotency for caller retries) — `adapters/driven/idempotency_cache.py`
 is `cachetools.TTLCache` under the hood, not a hand-rolled dict+eviction
 loop. Every accept/reject also logs via `loguru`
-(`adapters/driven/metrics.py`/`application/arm_service.py`'s `_note_error`/`_note_success`,
+(`adapters/driven/metrics.py`/`application/command_outcome_tracker.py`'s `note_error`/`note_success`,
 the same choke point `/rejected_history` and `/metrics` are populated
 from) — `docker compose logs sim` now shows structured
 `command rejected: <error_code> — <message>` /
