@@ -12,6 +12,7 @@ AXIS_LENGTH_M = 0.08
 ERROR_FLASH_DURATION_S = 1.5
 ERROR_FLASH_BLINK_S = 0.15
 STALE_AFTER_S = 1.0
+REJECTED_HISTORY_SHOWN = 3  # most recent entries shown, out of sim's full REJECTED_HISTORY_MAX (10)
 
 
 def axis_endpoints(position: List[float], orientation_quat: List[float], length: float = AXIS_LENGTH_M) -> List[List[float]]:
@@ -44,9 +45,17 @@ class ErrorFlashTracker:
 
 
 def build_overlay_text(
-    summary: str, grip_force: float, fps: float, stream_age_s: Optional[float], last_error: Optional[dict]
+    summary: str,
+    grip_force: float,
+    fps: float,
+    stream_age_s: Optional[float],
+    last_error: Optional[dict],
+    rejected_history: Optional[List[dict]] = None,
 ) -> Tuple[str, bool]:
-    """Returns (text, stale)."""
+    """Returns (text, stale). `rejected_history` is sim's full recent
+    list (newest last, per /rejected_history) — only the most recent
+    REJECTED_HISTORY_SHOWN are rendered, so this doesn't grow the
+    overlay unboundedly even though sim itself keeps up to 10."""
     stale = stream_age_s is not None and stream_age_s > STALE_AFTER_S
     stream_age_str = f"{stream_age_s * 1000:.0f}ms" if stream_age_s is not None else "n/a"
     lines = [
@@ -55,6 +64,10 @@ def build_overlay_text(
     ]
     if last_error:
         lines.append(f"last error: {last_error['error_code']}")
+    if rejected_history:
+        recent = rejected_history[-REJECTED_HISTORY_SHOWN:]
+        lines.append(f"recent rejections ({len(rejected_history)} total):")
+        lines.extend(f"  {entry['error_code']}" for entry in recent)
     return "\n".join(lines), stale
 
 

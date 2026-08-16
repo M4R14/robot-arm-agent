@@ -69,26 +69,50 @@ The window shows:
   pose, so you can see how far an in-flight move still has to go;
 - a small **red sphere** at the end-effector position, plus an **RGB
   axis triad** (X red, Y green, Z blue) showing its orientation;
+- a **fading red trail** of the end-effector's actual recent path (last
+  3s) — not a preview of an in-flight `move_trajectory`'s upcoming
+  waypoints (sim's `/state` never exposes those; the whole sequence runs
+  server-side within one blocking request), just where it's actually
+  been, which is what's observable from outside sim;
+- each joint **tints yellow, then red** as its angle approaches that
+  joint's real hardware limit (from `/capabilities`) — a visual reason
+  for a move getting clamped, instead of just a number;
+- a translucent **shell** around the base showing the arm's reach
+  envelope (`reach_min_m`..`reach_max_m`) — makes an `UNREACHABLE_POSE`
+  rejection visually obvious instead of a guess;
 - a legend explaining the above, plus camera controls;
 - an on-screen overlay of `sim`'s own state summary, grip force, render
   FPS, and state-stream age (to tell a slow viewer from a slow sim
   connection) — the summary line turns red, with a "STALE" warning
   showing the age in seconds, if the stream goes quiet, and briefly
   **flashes yellow** when a *new* error first appears (hard to miss even
-  if you glanced away), with the last rejected command's error appended.
+  if you glanced away), with the last rejected command's error appended,
+  plus the last few entries from `sim`'s own `/rejected_history`.
 
-The overlay text and axis triad redraw at a throttled 5Hz (motion itself
-still updates at the full 60Hz render rate) — no point re-uploading debug
-text/lines faster than anyone can read them.
+The overlay text, axis triad, trail, and joint-limit coloring redraw at
+a throttled 5Hz (motion itself still updates at the full 60Hz render
+rate) — no point re-uploading debug text/lines faster than anyone can
+read them.
 
 Camera: mouse drag orbits, scroll zooms, ctrl+drag pans (PyBullet's
 built-in GUI navigation). Keyboard: `1`/`2`/`3`/`4` jump to
-front/side/top/isometric presets, `r` resets to the startup view.
+front/side/top/isometric presets, `r` resets to the startup view, `c`
+saves the current view as a custom slot (persisted to
+`~/.cache/watch-arm/camera.json`, so it survives a restart), `5` recalls
+it, and `p` saves a screenshot PNG to `~/watch-arm-screenshots/`.
 
-Requires `pybullet` on the host: `pip3 install --user pybullet`.
+Requires a few packages on the host: `pip3 install --user -r
+viewer/requirements.txt` (`pybullet` for the GUI itself; `loguru` for
+leveled/formatted logging instead of bare `print()`; `tenacity` for the
+stream's reconnect-with-backoff loop; `typer` for the CLI below;
+`pydantic` to validate `/state`/`/capabilities` payloads at the viewer's
+own boundary, same as `sim`'s own FastAPI layer already does
+server-side; `Pillow` to save screenshots as PNGs).
 
 ```bash
 python3 watch-arm.py &
+python3 watch-arm.py --render-hz 30 --poll-interval-s 0.1 --quiet &   # tunable via CLI, no source edits needed
+python3 watch-arm.py --help
 ```
 
 Leave it running, then drive the arm as usual via `docker compose attach
@@ -265,11 +289,22 @@ docker compose exec agent node -e "fetch('http://sim:8000/openapi.json').then(r=
 ai-arm/
 ├── SPEC.md
 ├── docker-compose.yml
-├── watch-arm.py           local 3D viewer entrypoint (host-side, read-only)
+├── watch-arm.py           local 3D viewer entrypoint (host-side, read-only), typer CLI
 ├── viewer/
-│   ├── state_stream.py     background /state polling, thread-safe snapshots
-│   ├── camera.py            presets + keyboard shortcuts
-│   └── overlay.py            axis triad, overlay text/color, error-flash logic
+│   ├── requirements.txt    host-side deps: pybullet, loguru, tenacity, typer, pydantic, Pillow
+│   ├── schemas.py           pydantic PolledPayload/StatePayload/RejectedAttempt/Capabilities/
+│   │                          JointLimit/StreamError — validates sim's wire formats, nothing else
+│   ├── snapshot.py           StateSnapshot dataclass — the render-loop-facing shape
+│   ├── sim_exec.py            docker-exec plumbing: fetch_capabilities(), poll command builder
+│   │                            (bundles /state + /rejected_history into one polled line)
+│   ├── state_stream.py         StateStream — background thread, tenacity retry,
+│   │                             lock-guarded snapshot access (imports the three above)
+│   ├── joint_limits.py           per-joint hardware-limit proximity -> warning color
+│   ├── trail.py                   end-effector recent-position breadcrumb buffer
+│   ├── screenshot.py               'p' -> PNG via Pillow
+│   ├── camera.py                    presets + keyboard shortcuts + persisted custom view
+│   └── overlay.py                    axis triad, overlay text/color, error-flash,
+│                                       recent-rejection-history logic
 ├── robot-arm/            sim — Container A
 │   ├── Dockerfile
 │   ├── requirements.txt

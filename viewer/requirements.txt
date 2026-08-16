@@ -1,0 +1,6 @@
+pybullet==3.2.6
+loguru==0.7.2
+tenacity==9.0.0
+typer==0.13.1
+pydantic==2.9.2
+Pillow==11.0.0
