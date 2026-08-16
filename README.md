@@ -324,16 +324,21 @@ ai-arm/
 │   └── app/
 │       └── arm/              single feature module (NestJS-style): everything
 │                              the arm needs lives here
-│           ├── arm_module.py   composition root — builds ArmService, wires
-│           │                    the routers below into one router
+│           ├── arm_module.py   composition root — wires the routers below
+│           │                    into one router
+│           ├── dependencies.py   the single ArmService instance + get_service(),
+│           │                      FastAPI's own Depends() (not a new DI library —
+│           │                      the framework already in use has one)
 │           ├── arm_service.py  thin coordinator: lock, lifecycle, rate-limit/
 │           │                    error-recording wrapper around each command,
 │           │                    delegates the actual logic to support/
 │           ├── constants.py    safety limits, URDF path
 │           ├── schemas.py      pydantic request/response models
 │           ├── adapters/       raw PyBullet calls, no domain rules
-│           ├── routes/         one file per resource area: state_routes.py,
-│           │                    joint_routes.py, pose_routes.py,
+│           ├── routes/         one file per resource area, each route declaring
+│           │                    `service: ArmService = Depends(get_service)`
+│           │                    itself rather than a build_router(service) closure:
+│           │                    state_routes.py, joint_routes.py, pose_routes.py,
 │           │                    gripper_routes.py, macro_routes.py,
 │           │                    safety_routes.py, metrics_routes.py
 │           └── support/        single-purpose collaborators used by both
