@@ -2,10 +2,27 @@
 // call logging. All tool `execute` functions in ../tools/*.ts go through
 // `callSim` — nothing calls `fetch` directly.
 
+import { randomUUID } from "node:crypto";
+
 const SIM_URL = process.env.SIM_URL ?? "http://sim:8000";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 300;
+
+// pi's own toolCallId (e.g. "functions.move_to_pose:2") is only unique
+// within a single pi process — it restarts from 0 in every fresh
+// process, which orchestrator.js spawns one of per step. sim's
+// idempotency cache is keyed purely by this string with a 5s TTL (see
+// IDEMPOTENCY_TTL_S), so two different pi processes reusing the same
+// toolCallId within that window would make sim silently replay one
+// step's cached response for another step's different request. A
+// per-process random prefix makes every command_id globally unique so
+// that can't happen, in orchestrated or interactive mode alike.
+const PROCESS_ID = randomUUID();
+
+export function commandId(toolCallId: string): string {
+  return `${PROCESS_ID}:${toolCallId}`;
+}
 
 export function log(line: string) {
   console.error(`[tool] ${new Date().toISOString()} ${line}`);

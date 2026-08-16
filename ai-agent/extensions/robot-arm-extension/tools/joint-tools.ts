@@ -4,7 +4,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { callSim, jsonResult } from "../support/sim-client";
+import { callSim, commandId, jsonResult } from "../support/sim-client";
 import { assertKnownJoint } from "../support/validation";
 
 export function registerJointTools(pi: ExtensionAPI): void {
@@ -19,7 +19,7 @@ export function registerJointTools(pi: ExtensionAPI): void {
     }),
     async execute(toolCallId, params, signal) {
       await assertKnownJoint("move_joint", params.joint_id, signal);
-      return jsonResult(await callSim("move_joint", "/move_joint", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("move_joint", "/move_joint", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 
@@ -41,7 +41,7 @@ export function registerJointTools(pi: ExtensionAPI): void {
       for (const target of params.targets) {
         await assertKnownJoint("move_joints", target.joint_id, signal);
       }
-      return jsonResult(await callSim("move_joints", "/move_joints", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("move_joints", "/move_joints", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 

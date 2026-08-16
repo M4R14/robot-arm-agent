@@ -24,11 +24,23 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      # Optional: run orchestrator.js's Planner on a different (e.g.
+      # cheaper/faster) model than the default in settings.json, which
+      # the Executor always uses. Unset means both use the default.
+      PLANNER_MODEL: ${PLANNER_MODEL:-}
     depends_on:
       sim:
         condition: service_healthy
     stdin_open: true
     tty: true
+    volumes:
+      # agent-exclusive; never mounted into sim, so this doesn't weaken
+      # the isolation boundary in the other direction from sim_memory
+      # above. Holds only orchestrator.js's run_history.jsonl — one line
+      # per orchestrator.js invocation (task, steps, replans, cost,
+      # outcome) for a human to audit afterwards via `docker compose
+      # exec agent cat /data/run_history.jsonl`. Not read by any LLM.
+      - agent_logs:/data
 
 networks:
   control:
@@ -39,3 +51,4 @@ networks:
 
 volumes:
   sim_memory:
+  agent_logs:

@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { PoseFields } from "../support/schema";
-import { callSim, jsonResult } from "../support/sim-client";
+import { callSim, commandId, jsonResult } from "../support/sim-client";
 import { warnIfObviouslyUnreachable } from "../support/validation";
 
 export function registerPoseTools(pi: ExtensionAPI): void {
@@ -19,7 +19,7 @@ export function registerPoseTools(pi: ExtensionAPI): void {
     }),
     async execute(toolCallId, params, signal) {
       await warnIfObviouslyUnreachable("move_to_pose", params.x, params.y, params.z, params.relative, signal);
-      return jsonResult(await callSim("move_to_pose", "/move_to_pose", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("move_to_pose", "/move_to_pose", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 
@@ -46,6 +46,16 @@ export function registerPoseTools(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, signal) {
       return jsonResult(await callSim("preview_pose_candidates", "/preview_candidates", "POST", params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "pose_toward_reach_limit",
+    label: "Pose Toward Reach Limit",
+    description: "Given a direction (x, y, z) from the base — which doesn't itself need to be reachable, e.g. a point far beyond the arm's reach — computes the farthest point actually reachable along that same direction, server-side (no motion). Use this instead of manually guessing-and-checking several scaled-down points with preview_move_to_pose when you want 'extend as far as possible toward X'.",
+    parameters: Type.Object(PoseFields),
+    async execute(_toolCallId, params, signal) {
+      return jsonResult(await callSim("pose_toward_reach_limit", "/pose_toward_reach_limit", "POST", params, signal));
     },
   });
 }

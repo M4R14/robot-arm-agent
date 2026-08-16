@@ -175,6 +175,7 @@ target, even one that looks in-range.
 | `move_to_pose`         | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /move_to_pose` |
 | `preview_move_to_pose` | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /preview_move_to_pose` |
 | `preview_pose_candidates` | `{ candidates: PoseTarget[] }` | `POST /preview_candidates` |
+| `pose_toward_reach_limit` | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg? }` | `POST /pose_toward_reach_limit` |
 | `move_trajectory`      | `{ waypoints: PoseTarget[] }` | `POST /move_trajectory` |
 | `grip`                 | `{ force: number }` | `POST /grip` |
 | `release_gripper`      | *(none)* | `POST /release` |
@@ -187,7 +188,14 @@ target, even one that looks in-range.
 `move_joint`, `move_joints`, `move_to_pose`, `move_trajectory`, `grip`, and
 `pick_and_place` also pass the harness's `toolCallId` as `command_id` for
 idempotent retries — never LLM-supplied, so it can't be spoofed or
-omitted by the model.
+omitted by the model. The extension prefixes it with a random ID
+generated once per `pi` process (`commandId()` in `sim-client.ts`):
+`toolCallId` alone is only unique within one process, and §5.5's
+orchestrator spawns a fresh process per step, so without the prefix two
+different steps' calls could collide on the same `command_id` string
+within sim's 5s idempotency TTL — sim would then silently replay one
+step's cached response for another step's different request instead of
+executing it.
 
 No tool beyond this set may be registered without updating this spec.
 
@@ -197,6 +205,169 @@ No tool beyond this set may be registered without updating this spec.
 - No tool that accepts arbitrary code, shell commands, or file paths.
 - No shared volume/mount between `agent` and `sim`.
 - No tool that lets the LLM change its own tool whitelist at runtime.
+
+### 5.5 Optional invocation mode: Planner + Executor orchestration
+
+`orchestrator.js` (plain Node, no build step) is an alternative entry
+point run via `docker compose exec agent node orchestrator.js "<task>"`
+(or with flags — `--quiet`, `--planner-model <model>`, `--help`; parsed
+by `commander`) instead of the interactive `pi` session — it is not a
+new service, port, or network path, and it adds no tools beyond §5.3. A
+CLI flag sets its matching env var (`orchestrator.js` dynamically
+imports the rest of `./orchestrator/` only after doing so, since a
+static top-level `import` would already have evaluated
+`orchestrator/constants.js` — which validates `SIM_URL`/`PLANNER_MODEL`/
+`QUIET` via `envalid`, failing fast with a clear message on an invalid
+value — before any of `orchestrator.js`'s own code runs). It spawns `pi`
+as a subprocess twice per task:
+
+- **Planner**: `pi -p --no-tools --no-context-files --thinking low
+  --offline --system-prompt <PLANNER.md>` — zero tools, decomposes the
+  task into an ordered list of coordinate-free natural-language steps
+  (JSON output). Never talks to `sim` directly or indirectly.
+  `--thinking low` (vs. the Executor's inherited `medium` default, or
+  `high` for complex steps) matches its lighter job — pure text
+  decomposition, no tool-use/geometry reasoning. `--offline` skips pi's
+  own startup checks (model catalog refresh, update check); the actual
+  inference request still goes out over the network as normal, this
+  only trims fixed per-process overhead the Planner has no use for.
+- **Executor**: one fresh `pi -p --no-builtin-tools --no-extensions -e
+  robot-arm-extension/index.ts` process per step, identical tool set and
+  `AGENTS.md` workflow to interactive mode, with a short
+  `--append-system-prompt` addendum carrying only the current step text
+  and a one-line summary of the previous step (not the full task
+  history). Each Executor process ends its reply with a `STATUS: DONE`
+  / `STATUS: FAILED - <reason>` line; a missing line counts as failure.
+
+On failure, the orchestrator calls the Planner again (same
+`--no-tools --no-context-files` invocation) with the original task, the
+already-completed steps, and the failure reason, and replaces the
+remaining plan with its response — closed-loop, capped at
+`MAX_REPLANS = 3` attempts so a persistently-failing step can't loop
+forever.
+
+Before each Executor step, `orchestrator.js` also makes one direct
+read-only `GET /state` call to `sim` itself (not through a registered
+tool) to fold a current-state summary into that step's context — this
+is the orchestrator script's own trusted call, at the same trust level
+as the Dockerfile's `CMD`, not a capability exposed to the LLM; the
+Executor's tool set is unchanged.
+
+Every orchestrator-issued `pi` process (Planner, each replan, each
+Executor step) also gets `--no-session` (added once, in
+`pi-runner.js`'s `runPiOnce()`, so every call site gets it automatically
+rather than each remembering to add it) — each is single-shot and
+already fully tracked by `run_history.jsonl`/`/data/runs/`, so pi's own
+session mechanism would just accumulate unpruned files under
+`~/.pi/agent/sessions` for the container's entire `restart:
+unless-stopped` lifetime otherwise. The interactive `CMD` (§5.2) is the
+one legitimate exception — it's meant to be resumable — so it instead
+points `--session-dir` at `/data/pi-sessions` (the same `agent_logs`
+volume, so it survives a container restart instead of living in the
+writable layer).
+
+Each Executor process is bounded by a per-step timeout and tool-call
+ceiling, killed and treated as a normal step failure (triggering a
+replan) if either is exceeded — so one stuck or runaway step can't hang
+the whole run. The budget scales with whether the step text looks like
+it needs real geometric reasoning (`COMPLEX_STEP_PATTERN`, also what
+decides the `--thinking high` bump): 2 min / 15 tool calls for a plain
+step, 10 min / 40 tool calls for a complex one — a plain step that blows
+through the tight budget is almost certainly stuck, not just slow, so it
+fails fast rather than waiting as long as a genuinely hard step is
+allowed to.
+
+The Planner's own output is capped at `MAX_STEPS = 20` — decomposing a
+task far more granularly than intended fails the whole run immediately
+with a clear message, rather than silently spawning dozens of sequential
+Executor processes. `PLANNER.md` also documents the same named canned
+skills as `AGENTS.md`'s "Canned skills" section (kept in sync by hand),
+so the Planner phrases a matching step using the exact catalog name and
+the Executor's fast pre-tuned path actually gets hit instead of being
+missed by wording mismatch.
+
+`PLANNER_MODEL` (env var, passed through in `docker-compose.yml`,
+unset/empty by default) lets the Planner run on a different `--model`
+than the Executor, which always uses `settings.json`'s default — pure
+decomposition is a lighter task than tool-use/geometry reasoning, so a
+cheaper or faster model is a reasonable choice there without touching
+the Executor. Cost is tracked regardless: every `pi` invocation's
+`message_end` events are summed (`extractCost()`), including partial
+cost from a run killed by the timeout/tool-call caps above, and the
+total is both printed at the end and included in the run-history record
+below.
+
+A `pi` process that exits non-zero on its own (a crash — network blip,
+provider hiccup — as opposed to one we killed ourselves via the
+timeout/tool-call caps above, which resolves normally with a
+`killedReason` instead of rejecting) is retried once, via `p-retry`
+(`retries: 1`, fixed `CRASH_RETRY_DELAY_MS` delay — no exponential
+backoff), before propagating as a real failure — a second consecutive
+crash is treated as a persistent problem, not bad luck. Replanning also
+gets the Executor's full final report, not just
+the short failure reason, since sim's own rejection messages often carry
+detail (e.g. `closest_achievable_position`) worth acting on. The
+Planner's JSON response is extracted via a balanced-brace scan for the
+first complete top-level object (`extractFirstJsonObject()`), not a
+greedy first-`{`-to-last-`}` regex — the latter would swallow anything
+after the JSON if the Planner ever appended trailing text containing a
+brace.
+
+Every `orchestrator.js` run — whether it completes or fails — appends
+one JSON line to `/data/run_history.jsonl` on a new `agent_logs` Docker
+volume, mounted only into `agent` (mirroring `sim_memory`'s
+one-container-only mounting on the other side — never mounted into
+`sim`, so this doesn't weaken the isolation boundary either direction).
+Purely a human-facing audit trail (`docker compose exec agent cat
+/data/run_history.jsonl`); no LLM reads it, and a write failure there is
+non-fatal to the run it's describing. The file rotates once it crosses
+5MB (current file renamed to `.1`, a fresh one started) — single
+generation, not a retained history, just enough to stop unbounded
+growth.
+
+Each record carries: a short `runId` (also the filename, under
+`/data/runs/<runId>.log` on the same volume, of that run's complete
+structured log — every `[tool]`/`[heartbeat]`/`[planner]`/`[executor]`
+line, via a `pino` logger opened for the run's duration in `logger.js`
+and closed in the same `finally` as the summary record — not just what
+`run_history.jsonl` itself keeps). `pino.multistream` fans each message
+out to two destinations at different levels: the file gets everything
+(`trace`) as pino's normal structured JSON; the console gets a custom
+`Writable` that reformats each record back to the plain
+`[label] message` text this project has always shown (`warn`/`error`
+records to stderr, everything else to stdout) — `QUIET=1` raises the
+console stream's minimum level to `info`, dropping `[heartbeat]` (logged
+at `debug`) from the terminal without affecting the file, which stays at
+`trace` regardless. `pi` children's stderr is piped (not inherited) and
+logged line-by-line so their `[tool]` output reaches the same file.
+
+Beyond the log itself, each record also carries: cost split by role
+(`plannerCost`/`executorCost`, not just `totalCost`); `steps`, each with
+`skillUsed: { reported, canonical }` — `canonical` is the Executor's
+`SKILL:` line matched case-insensitively against `KNOWN_SKILLS`
+(constants.js, kept in sync with `AGENTS.md`/`PLANNER.md`'s catalog),
+`null` with `reported` still set if the name doesn't match anything
+known (surfaced by `stats.js` as a possible typo/hallucination rather
+than silently counted as that skill), both `null` if the step was
+improvised; and `replanHistory`, one entry per replan attempt with the
+failed step, failure reason, and (best-effort) `error_code` recovered by
+scanning the Executor's report text for one of sim's known codes —
+`null` when the rejection never reached sim at all (e.g. the extension's
+own client-side reach check in `validation.ts`, which doesn't echo
+sim's code names).
+
+`QUIET=1` (env var) suppresses `[heartbeat]` lines on the live
+console only — they're still written to the run's `/data/runs/` log
+file regardless, so quieting the terminal never loses detail from the
+persisted trace. `node orchestrator/stats.js` aggregates the whole
+`run_history.jsonl` log (run/outcome counts, cost breakdown, replan
+rate, error_code frequency, canned-skill usage including unrecognized
+names) instead of everyone re-deriving the same numbers by hand each
+time.
+
+This keeps §5.2's per-tool contract ("validate, one HTTP call, return")
+and §5.3's tool set completely untouched — the orchestration lives
+entirely in how `pi` is invoked, not in new tools or new `sim` surface.
 
 ## 6. Docker Compose
 

@@ -36,8 +36,22 @@ after the call returns), so sequencing matters:
 7. Comparing several candidate poses? Call `preview_pose_candidates`
    once with all of them, not `preview_move_to_pose` in a loop — one
    round trip either way.
+8. Want to "extend as far as possible toward X" (X itself may be
+   unreachable, e.g. way beyond `reach_max_m`)? Call
+   `pose_toward_reach_limit` with X as the direction — it binary-searches
+   server-side and returns the farthest actually-reachable point along
+   that same direction in one call. Don't manually guess-and-check a
+   series of scaled-down points with `preview_move_to_pose` — that's
+   exactly what this tool replaces.
 
 ## Before a multi-step task
+
+This section applies when you're driving the whole task yourself in one
+session (e.g. interactive `docker compose attach agent`). If you were
+instead invoked by `orchestrator.js` as the Executor for a single step
+of an externally-planned task, skip this — just perform that one step
+and end with the `STATUS:` line as instructed in your prompt; the
+Planner already did the decomposition.
 
 For anything with more than ~3 moves, write your plan as plain text (not
 a tool call) in this shape before executing anything, so it's inspectable
@@ -137,4 +151,44 @@ move_joint({ joint_id: 0, target_angle_deg: 10, relative: true })
 wait_for_arm({ joint_ids: [0] })
 // joint 0 is now current_angle + 10deg — no need to read state first
 // to compute the new absolute target
+```
+
+## Canned skills (try these first)
+
+If you're asked for one of these named gestures, use the sequence below
+instead of improvising one from scratch — they're already known to be
+reachable and collision-free from the home pose. If the request doesn't
+match one of these (a different gesture, or from a pose far from home),
+there's no catalog entry — improvise normally using the workflow above
+(`preview_move_to_pose`/`preview_pose_candidates` before committing,
+`wait_for_arm` between steps). Don't add new entries here yourself; this
+list only grows when a human curates it.
+
+**Wave hello** — small side-to-side motion at a raised, relaxed pose:
+
+```
+move_joint({ joint_id: 1, target_angle_deg: -30 })
+move_joint({ joint_id: 3, target_angle_deg: 60 })
+wait_for_arm({})
+move_joint({ joint_id: 5, target_angle_deg: 20 })
+wait_for_arm({ joint_ids: [5] })
+move_joint({ joint_id: 5, target_angle_deg: -20 })
+wait_for_arm({ joint_ids: [5] })
+move_joint({ joint_id: 5, target_angle_deg: 20 })
+wait_for_arm({ joint_ids: [5] })
+// repeat the last two calls for more waves if asked for a specific count
+```
+
+**Bow** — lower the arm forward and hold, then return to home:
+
+```
+move_joint({ joint_id: 1, target_angle_deg: 45 })
+move_joint({ joint_id: 3, target_angle_deg: 20 })
+wait_for_arm({})
+// hold briefly, then return to the home pose explicitly — don't use
+// reset_environment for this, it also wipes rejected-command history
+move_joint({ joint_id: 1, target_angle_deg: 30 })
+move_joint({ joint_id: 3, target_angle_deg: 45 })
+move_joint({ joint_id: 5, target_angle_deg: 30 })
+wait_for_arm({})
 ```

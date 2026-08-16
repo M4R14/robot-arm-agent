@@ -21,6 +21,8 @@ from .constants import (
     MAX_JOINT_VELOCITY_DEG_S,
     MAX_WAIT_TIMEOUT_S,
     MIN_COMMAND_INTERVAL_S,
+    POSE_TOWARD_LIMIT_COARSE_STEPS,
+    POSE_TOWARD_LIMIT_REFINE_ITERATIONS,
     REJECTED_HISTORY_MAX,
     RESET_SETTLE_STEPS,
     SIM_HZ,
@@ -330,6 +332,75 @@ class ArmService:
             except ValueError as exc:
                 return False, str(exc), previously_tried
         return True, None, previously_tried
+
+    def preview_pose_toward_limit(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        roll_deg: Optional[float] = None,
+        pitch_deg: Optional[float] = None,
+        yaw_deg: Optional[float] = None,
+    ) -> Tuple[bool, Optional[str], Optional[List[float]]]:
+        """Finds the farthest point reachable along the direction from the
+        base toward (x, y, z), via server-side binary search — instead of
+        the caller guessing points and checking each with
+        preview_move_to_pose. (x, y, z) is a direction, not necessarily
+        itself reachable (or even within the reach envelope at all)."""
+        with self._lock:
+            magnitude = (x * x + y * y + z * z) ** 0.5
+            if magnitude < 1e-6:
+                return False, "direction is degenerate (too close to the base to define a direction)", None
+            unit = [x / magnitude, y / magnitude, z / magnitude]
+            _reach_min, reach_max = self._adapter.estimate_reach_envelope_m()
+
+            orientation_quat = None
+            if roll_deg is not None and pitch_deg is not None and yaw_deg is not None:
+                orientation_quat = self._adapter.euler_deg_to_quaternion(roll_deg, pitch_deg, yaw_deg)
+
+            def try_scale(scale: float) -> Optional[List[float]]:
+                point = [unit[i] * scale for i in range(3)]
+                target_angles_deg = self._adapter.calculate_ik_deg(point, orientation_quat)
+                candidate = {
+                    joint_id: self._validator.clamp_to_joint_limits(joint_id, target_deg)
+                    for joint_id, target_deg in zip(self._adapter.movable_joints, target_angles_deg)
+                }
+                try:
+                    self._validator.validate_or_raise(candidate, requested_position=point, record=False)
+                    return point
+                except ValueError:
+                    return None
+
+            # Coarse scan from the far end inward: the first hit is the
+            # true outer boundary, regardless of any unreachable dip
+            # closer to the base (see constants.py for why that dip
+            # rules out a plain binary search from 0).
+            samples = [reach_max * i / POSE_TOWARD_LIMIT_COARSE_STEPS for i in range(POSE_TOWARD_LIMIT_COARSE_STEPS, -1, -1)]
+            best_point: Optional[List[float]] = None
+            best_scale = 0.0
+            upper_bound = reach_max
+            for idx, scale in enumerate(samples):
+                point = try_scale(scale)
+                if point is not None:
+                    best_point = point
+                    best_scale = scale
+                    upper_bound = samples[idx - 1] if idx > 0 else reach_max
+                    break
+
+            if best_point is None:
+                return False, "no reachable point found along that direction", None
+
+            lo, hi = best_scale, upper_bound
+            for _ in range(POSE_TOWARD_LIMIT_REFINE_ITERATIONS):
+                mid = (lo + hi) / 2
+                point = try_scale(mid)
+                if point is not None:
+                    best_point = point
+                    lo = mid
+                else:
+                    hi = mid
+
+        return True, None, best_point
 
     # --- move_trajectory (sequential waypoints) ---------------------------------
 

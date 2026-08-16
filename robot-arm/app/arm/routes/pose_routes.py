@@ -6,6 +6,8 @@ from ..arm_service import ArmService
 from ..schemas import (
     ActionResponse,
     MoveToPoseRequest,
+    PoseTowardLimitRequest,
+    PoseTowardLimitResponse,
     PreviewCandidatesRequest,
     PreviewCandidatesResponse,
     PreviewCandidateResult,
@@ -40,6 +42,14 @@ def build_router(service: ArmService) -> APIRouter:
             req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative
         )
         return PreviewResponse(ok=ok, reason=reason, previously_tried=PreviouslyTried(**previously_tried) if previously_tried else None)
+
+    @router.post("/pose_toward_reach_limit", response_model=PoseTowardLimitResponse)
+    def pose_toward_reach_limit(req: PoseTowardLimitRequest) -> PoseTowardLimitResponse:
+        ok, reason, point = service.preview_pose_toward_limit(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg)
+        if not ok or point is None:
+            return PoseTowardLimitResponse(ok=False, reason=reason)
+        distance_m = (point[0] ** 2 + point[1] ** 2 + point[2] ** 2) ** 0.5
+        return PoseTowardLimitResponse(ok=True, achieved_x=point[0], achieved_y=point[1], achieved_z=point[2], distance_from_base_m=distance_m)
 
     @router.post("/preview_candidates", response_model=PreviewCandidatesResponse)
     def preview_candidates(req: PreviewCandidatesRequest) -> PreviewCandidatesResponse:

@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { PoseFields } from "../support/schema";
-import { callSim, jsonResult } from "../support/sim-client";
+import { callSim, commandId, jsonResult } from "../support/sim-client";
 import { warnIfObviouslyUnreachable } from "../support/validation";
 
 export function registerMacroTools(pi: ExtensionAPI): void {
@@ -21,7 +21,7 @@ export function registerMacroTools(pi: ExtensionAPI): void {
     async execute(toolCallId, params, signal) {
       await warnIfObviouslyUnreachable("pick_and_place", params.pick.x, params.pick.y, params.pick.z, false, signal);
       await warnIfObviouslyUnreachable("pick_and_place", params.place.x, params.place.y, params.place.z, false, signal);
-      return jsonResult(await callSim("pick_and_place", "/pick_and_place", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("pick_and_place", "/pick_and_place", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 }

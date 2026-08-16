@@ -132,6 +132,19 @@ class PreviewResponse(BaseModel):
     previously_tried: Optional[PreviouslyTried] = None
 
 
+class PoseTowardLimitRequest(PoseTarget):
+    pass
+
+
+class PoseTowardLimitResponse(BaseModel):
+    ok: bool
+    reason: Optional[str] = None
+    achieved_x: Optional[float] = None
+    achieved_y: Optional[float] = None
+    achieved_z: Optional[float] = None
+    distance_from_base_m: Optional[float] = None
+
+
 class StopRequest(BaseModel):
     joint_ids: Optional[List[int]] = None
 

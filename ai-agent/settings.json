@@ -1,6 +1,6 @@
 {
   "defaultProvider": "openrouter",
-  "defaultModel": "moonshotai/kimi-k2.6",
+  "defaultModel": "deepseek/deepseek-v4-flash-0731",
   "defaultThinkingLevel": "medium",
   "providers": {
     "openrouter": {

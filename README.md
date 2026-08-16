@@ -97,6 +97,108 @@ updates in real time. Stop it with `pkill -f watch-arm.py` (or Ctrl+C
 in its terminal — either way it cleans up its `docker compose exec`
 subprocess rather than leaving it orphaned).
 
+## Two-agent mode: Planner + Executor
+
+Besides the interactive single-session mode above, `orchestrator.js`
+runs the same task as a **Planner** (no tools, decomposes a high-level
+task into an ordered list of atomic, coordinate-free steps — see
+[`ai-agent/PLANNER.md`](ai-agent/PLANNER.md)) followed by a fresh
+**Executor** `pi` process per step (the same tool set and workflow as
+above, from [`ai-agent/AGENTS.md`](ai-agent/AGENTS.md), including its
+"canned skills" section for a few pre-tuned gestures like waving or
+bowing). Each Executor run gets only a one-line summary of the previous
+step, not the whole task's history — so long plans don't accumulate
+context the way a single long-lived session would. It ends its reply
+with `STATUS: DONE` or `STATUS: FAILED - <reason>` (missing that line
+counts as failure — fail-closed).
+
+On failure, the orchestrator doesn't just stop: it calls the Planner
+again with the original task, the steps already completed, and why the
+next one failed, and gets back a revised list of remaining steps —
+closed-loop, up to `MAX_REPLANS` (3) attempts before giving up for
+good. A vague replanned step can itself fail (a fresh Executor process
+has no memory of earlier numeric detail, only the step's text — asking
+a clarifying question with no tool calls also counts as failure, since
+there's no `STATUS` line), which just triggers another replan attempt.
+
+Both agents carry a few more safety valves: the Planner's own plan is
+capped at `MAX_STEPS` (20) — a task decomposed far more granularly than
+intended fails fast with a clear message instead of quietly spawning
+dozens of processes — and each Executor step gets a timeout and
+tool-call ceiling scaled to whether it looks geometry-heavy (2 min / 15
+calls for a plain step, 10 min / 40 for a complex one, also what decides
+the `--thinking high` bump), so a plain step that blows its tight budget
+is treated as stuck rather than made to wait as long as a hard one.
+`PLANNER.md` also knows the same named canned skills as `AGENTS.md`, so
+it phrases a matching step with the exact catalog name the Executor
+looks for, instead of missing the fast path by wording it differently.
+
+A few more quality-of-life pieces: every `pi` invocation (Planner,
+each replan, each Executor step) logs a `[heartbeat]` line every 15s
+while it's still working, so a long silent stretch (the LLM thinking,
+not calling tools) doesn't look indistinguishable from a hang. The final
+line reports the run's total cost, summed across every invocation.
+`PLANNER_MODEL` (env var, or `--planner-model` on the CLI, unset by
+default) lets the Planner run on a different — e.g. cheaper/faster —
+model than the Executor, since decomposing a task into plain-language
+steps is a much lighter job than reasoning about tool calls and
+geometry. And every run, whether it
+completes or fails, appends one line to
+`/data/run_history.jsonl` — an agent-exclusive volume (`agent_logs`,
+mirroring `sim_memory`'s pattern on the other container, never mounted
+into `sim`) purely for a human to audit afterwards, not read by any LLM.
+The file rotates (single backup generation) past 5MB.
+
+Each record has a short `runId`, printed at the start of the run and
+also the filename of that run's full raw output — every `[tool]`/
+`[heartbeat]`/`[planner]`/`[executor]` line, not just the summary — at
+`/data/runs/<runId>.log`, so a specific past run's detail is always one
+`docker compose exec agent cat /data/runs/<id>.log` away instead of
+being lost once it scrolls out of `docker compose logs`. Cost is broken
+down by role (`plannerCost`/`executorCost`, not just a total); each step
+records whether it used a named canned skill (validated against the
+same catalog `AGENTS.md`/`PLANNER.md` know — a typo'd or hallucinated
+name is flagged, not silently trusted) or improvised; and each replan
+attempt records the failed step, why, and its `error_code` where
+recoverable. `QUIET=1` (env var, or `-q`/`--quiet` on the CLI) silences
+`[heartbeat]` lines on the live console — they're still written to the
+run's log file either way. `docker compose exec agent node
+orchestrator/stats.js` aggregates all of this across the whole log
+(cost split, replan rate, which `error_code`s trigger replans most,
+canned-skill usage) instead of re-deriving it by hand.
+
+```bash
+docker compose exec agent node orchestrator.js "wave hello"
+docker compose exec agent node orchestrator.js "pick up the cube and place it on the tray"
+docker compose exec agent node orchestrator.js --quiet --planner-model openai/gpt-mini-latest "bow"
+docker compose exec agent node orchestrator.js --help
+```
+
+CLI flags (`commander`) and env vars both work — a flag sets the
+matching env var internally before the rest of the orchestrator loads,
+so either style configures the same underlying settings
+(`orchestrator/constants.js`, validated at startup via `envalid` — an
+invalid value like `QUIET=notabool` fails fast with a clear message
+instead of silently misbehaving). Crash-retry (`pi-runner.js`) is
+`p-retry` under the hood, kept at exactly one fixed-delay retry to match
+the original design (a second consecutive crash is treated as a
+persistent problem, not more attempts).
+
+Every orchestrator-issued `pi` process also gets `--no-session`, the
+Planner specifically gets `--thinking low --offline` (lighter job than
+the Executor, no startup checks it needs), and the interactive `pi`
+session (the one path that's actually meant to be resumable) has its
+own storage pointed at `/data/pi-sessions` instead of the container's
+writable layer — otherwise every single `pi -p` call the orchestrator
+ever makes (there can be dozens across one long-running task's replans
+and steps) would leave behind a session file nobody prunes, for as long
+as the container stays up (`restart: unless-stopped`).
+
+This adds no new services, ports, or network paths — it's a plain
+Node script run inside the already-running `agent` container via
+`docker compose exec`, spawning `pi` as a subprocess exactly like the
+interactive CLI does.
+
 ## Tools the agent can call
 
 | Tool | What it does |
@@ -107,6 +209,7 @@ subprocess rather than leaving it orphaned).
 | `move_joint` / `move_joints` | Move one or several joints to target angles (degrees, absolute or `relative`); batched moves arrive together |
 | `preview_move_joint` / `preview_move_to_pose` | Dry-run validation — check if a move would succeed, without moving the arm |
 | `preview_pose_candidates` | Same dry-run check for several poses in one call, instead of previewing one at a time |
+| `pose_toward_reach_limit` | Given a direction (possibly unreachable), returns the farthest actually-reachable point along it — one server-side binary search instead of manually guessing points with `preview_move_to_pose` |
 | `move_to_pose` | Move the end effector to (x, y, z), optional roll/pitch/yaw, via inverse kinematics |
 | `move_trajectory` | Move through a sequence of poses in order, stopping at the first one that fails |
 | `grip` / `release_gripper` | Set grip force / release (current placeholder URDF has no gripper actuator — records the value) |
@@ -192,7 +295,20 @@ ai-arm/
 └── ai-agent/              agent — Container B
     ├── Dockerfile
     ├── package.json
-    ├── AGENTS.md            workflow guidance + examples, loaded as global instructions
+    ├── AGENTS.md            Executor workflow guidance + examples, loaded as global instructions
+    ├── PLANNER.md           Planner-only instructions (§ Two-agent mode)
+    ├── orchestrator.js      thin entrypoint — commander CLI parsing + exit code only
+    ├── orchestrator/
+    │   ├── constants.js       tunable timeouts/caps/paths/QUIET/KNOWN_SKILLS, nothing else
+    │   ├── cost-tracker.js      shared {total, planner, executor} accumulator
+    │   ├── pi-runner.js           spawns/streams `pi`, extracts cost/text, crash-retries once
+    │   ├── logger.js                pino: structured per-run log at /data/runs/<runId>.log +
+    │   │                              plain-text console (QUIET drops [heartbeat] from console only)
+    │   ├── planner.js                  plan()/replan(), talks to pi-runner
+    │   ├── executor.js                   executeStep()/statusOf(), talks to pi-runner
+    │   ├── run-history.js                  appendRunHistory() — writes/rotates run_history.jsonl
+    │   ├── run.js                            the plan → execute → replan control loop
+    │   └── stats.js                            `node orchestrator/stats.js` — aggregate summary
     └── extensions/
         └── robot-arm-extension/   directory-style extension (pi's "index.ts + helpers" pattern)
             ├── index.ts             composition root — registers each tool group

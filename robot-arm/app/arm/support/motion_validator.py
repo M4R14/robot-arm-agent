@@ -44,7 +44,10 @@ class MotionValidator:
         return self._pose_memory.lookup_near(position)
 
     def validate_or_raise(
-        self, candidate: Dict[int, float], requested_position: Optional[List[float]] = None
+        self,
+        candidate: Dict[int, float],
+        requested_position: Optional[List[float]] = None,
+        record: bool = True,
     ) -> List[float]:
         achieved_position, collision_free, condition_number = self._adapter.dry_run(candidate)
 
@@ -56,7 +59,7 @@ class MotionValidator:
         elif condition_number > SINGULARITY_CONDITION_THRESHOLD:
             error = NearSingularityError(condition_number)
 
-        if requested_position is not None:
+        if requested_position is not None and record:
             self._pose_memory.record(
                 requested_position, "rejected" if error else "ok", error.error_code if error else None
             )

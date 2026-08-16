@@ -105,3 +105,16 @@ ERROR_RECOVERY_HINTS: Dict[str, str] = {
 POSE_MEMORY_PATH = "/data/pose_facts.json"
 POSE_MEMORY_LOOKUP_RADIUS_M = 0.05
 POSE_MEMORY_MAX_FACTS = 500
+
+# /pose_toward_reach_limit: the reachable envelope along a ray from the
+# base is NOT "feasible near 0, infeasible past some threshold" — points
+# too close to the base are unreachable too (mechanical minimum/
+# self-collision when folded up), so naive binary search from 0 can
+# converge on nothing. Instead: a coarse scan from the far end (reach_max)
+# inward finds the true outer boundary regardless of what happens closer
+# to the base (stops at the first hit), then a short binary-search
+# refinement narrows it down. Both cheap and server-side — microseconds
+# total, replacing what a caller would otherwise need many
+# preview_move_to_pose round trips to approximate by hand.
+POSE_TOWARD_LIMIT_COARSE_STEPS = 24
+POSE_TOWARD_LIMIT_REFINE_ITERATIONS = 12

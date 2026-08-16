@@ -3,7 +3,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { callSim, jsonResult } from "../support/sim-client";
+import { callSim, commandId, jsonResult } from "../support/sim-client";
 
 export function registerGripperTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -14,7 +14,7 @@ export function registerGripperTools(pi: ExtensionAPI): void {
       force: Type.Number({ description: "Requested grip force" }),
     }),
     async execute(toolCallId, params, signal) {
-      return jsonResult(await callSim("grip", "/grip", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("grip", "/grip", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 

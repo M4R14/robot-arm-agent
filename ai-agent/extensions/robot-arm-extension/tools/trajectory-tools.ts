@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { PoseFields } from "../support/schema";
-import { callSim, jsonResult } from "../support/sim-client";
+import { callSim, commandId, jsonResult } from "../support/sim-client";
 
 export function registerTrajectoryTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -16,7 +16,7 @@ export function registerTrajectoryTools(pi: ExtensionAPI): void {
       waypoints: Type.Array(Type.Object(PoseFields), { description: "Poses to visit in order" }),
     }),
     async execute(toolCallId, params, signal) {
-      return jsonResult(await callSim("move_trajectory", "/move_trajectory", "POST", { ...params, command_id: toolCallId }, signal));
+      return jsonResult(await callSim("move_trajectory", "/move_trajectory", "POST", { ...params, command_id: commandId(toolCallId) }, signal));
     },
   });
 }
