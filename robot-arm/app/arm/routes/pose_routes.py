@@ -11,6 +11,7 @@ from ..schemas import (
     PreviewCandidateResult,
     PreviewMoveToPoseRequest,
     PreviewResponse,
+    PreviouslyTried,
 )
 from ..support.error_mapping import raise_http
 from ..support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
@@ -35,14 +36,22 @@ def build_router(service: ArmService) -> APIRouter:
 
     @router.post("/preview_move_to_pose", response_model=PreviewResponse)
     def preview_move_to_pose(req: PreviewMoveToPoseRequest) -> PreviewResponse:
-        ok, reason = service.preview_move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative)
-        return PreviewResponse(ok=ok, reason=reason)
+        ok, reason, previously_tried = service.preview_move_to_pose(
+            req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative
+        )
+        return PreviewResponse(ok=ok, reason=reason, previously_tried=PreviouslyTried(**previously_tried) if previously_tried else None)
 
     @router.post("/preview_candidates", response_model=PreviewCandidatesResponse)
     def preview_candidates(req: PreviewCandidatesRequest) -> PreviewCandidatesResponse:
         results = service.preview_candidates([c.model_dump() for c in req.candidates])
         return PreviewCandidatesResponse(
-            results=[PreviewCandidateResult(index=i, ok=ok, reason=reason) for i, (ok, reason) in enumerate(results)]
+            results=[
+                PreviewCandidateResult(
+                    index=i, ok=ok, reason=reason,
+                    previously_tried=PreviouslyTried(**previously_tried) if previously_tried else None,
+                )
+                for i, (ok, reason, previously_tried) in enumerate(results)
+            ]
         )
 
     return router

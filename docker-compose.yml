@@ -6,6 +6,13 @@ services:
     restart: unless-stopped
     # No ports: mapping — sim is reachable only from agent, over the
     # internal "control" network, by service name.
+    volumes:
+      # sim-exclusive; never mounted into agent, so this doesn't weaken
+      # the isolation boundary. Holds only pose_facts.json — a rough
+      # "have I tried around here before" cache keyed by URDF path (see
+      # POSE_MEMORY_* in constants.py), the one deliberate exception to
+      # sim's otherwise fully ephemeral state.
+      - sim_memory:/data
 
   agent:
     build: ./ai-agent
@@ -29,3 +36,6 @@ networks:
     internal: true
   egress:
     driver: bridge
+
+volumes:
+  sim_memory:

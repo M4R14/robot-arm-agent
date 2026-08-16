@@ -94,3 +94,14 @@ ERROR_RECOVERY_HINTS: Dict[str, str] = {
         "firing again immediately will just get rate-limited again."
     ),
 }
+
+# Persistent pose memory: the one deliberate exception to sim's otherwise
+# fully ephemeral state. Lives on a Docker volume mounted only to `sim`
+# (never shared with `agent` — SPEC.md's isolation rule stays intact,
+# `agent` only ever sees this through sim's normal HTTP responses).
+# Survives /reset and container restarts; invalidated only if URDF_PATH
+# changes (a different model has different geometry, so old facts about
+# reachability/collision no longer apply).
+POSE_MEMORY_PATH = "/data/pose_facts.json"
+POSE_MEMORY_LOOKUP_RADIUS_M = 0.05
+POSE_MEMORY_MAX_FACTS = 500

@@ -91,8 +91,8 @@ as code.
 | POST   | `/move_joints`         | `{ targets: [{joint_id, target_angle_deg}], relative?: bool, command_id?: str }` | `{ ok: bool, message: str }` | batch of `/move_joint`, validated as one resulting pose, synchronized arrival |
 | POST   | `/preview_move_joint`  | `{ joint_id: int, target_angle_deg: float, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_joint` without moving the arm |
 | POST   | `/move_to_pose`        | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool, command_id? }` | `{ ok: bool, message: str }` | inverse kinematics; reject if unreachable, self-colliding, or near-singular; `relative` adds (x,y,z) to the current end-effector position (orientation stays absolute) |
-| POST   | `/preview_move_to_pose`| `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_to_pose` without moving the arm |
-| POST   | `/preview_candidates`  | `{ candidates: PoseTarget[] }` | `{ results: [{index, ok, reason?}] }` | read-only; runs `/preview_move_to_pose` validation on several poses in one call — evaluating options is one HTTP call, not N |
+| POST   | `/preview_move_to_pose`| `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool }` | `{ ok: bool, reason?: str, previously_tried?: {outcome, error_code?, recorded_at} }` | read-only; runs the same validation as `/move_to_pose` without moving the arm; `previously_tried` is the nearest recorded pose-memory fact within `POSE_MEMORY_LOOKUP_RADIUS_M`, if any (see §6 persistent pose memory) |
+| POST   | `/preview_candidates`  | `{ candidates: PoseTarget[] }` | `{ results: [{index, ok, reason?, previously_tried?}] }` | read-only; runs `/preview_move_to_pose` validation (incl. pose-memory lookup) on several poses in one call — evaluating options is one HTTP call, not N |
 | POST   | `/move_trajectory`     | `{ waypoints: PoseTarget[], command_id? }` | `{ ok: bool, waypoints: [{index, ok, reached, reason?}], message: str }` | moves through poses in order, waiting for each; stops at the first waypoint that fails validation rather than skipping it |
 | POST   | `/grip`                | `{ force: float, command_id?: str }` | `{ ok: bool, message: str }` | clamp `force` to `[0, MAX_FORCE]`; current placeholder URDF has no gripper actuator |
 | POST   | `/release`             | — | `{ ok: bool, message: str }` | alias for `/grip` with `force: 0` |
@@ -210,6 +210,15 @@ No tool beyond this set may be registered without updating this spec.
 - `agent` depends on `sim`'s healthcheck (`GET /health`) before starting.
 - LLM credentials passed via env vars (`ANTHROPIC_API_KEY` and/or
   `OPENAI_API_KEY`), not baked into the image.
+- `sim` mounts one named volume (`sim_memory:/data`) for persistent pose
+  memory (§4.3 `previously_tried`) — **exclusively its own**, never
+  mounted into `agent`, so the "no shared volume/mount between `agent`
+  and `sim`" rule (§5.4) stays intact. This is the one deliberate
+  exception to `sim`'s otherwise fully ephemeral state: it records every
+  Cartesian pose validated (via `/move_to_pose` or any preview endpoint)
+  and its outcome, survives `/reset` and container restarts, and is
+  invalidated only when the recorded `urdf_path` no longer matches
+  `URDF_PATH` (a different model has different geometry).
 
 ## 7. Acceptance criteria
 

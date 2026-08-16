@@ -126,6 +126,15 @@ calls carry an idempotency key (the harness's own `toolCallId`, not
 LLM-supplied) so a retried call replays the prior result instead of
 re-executing. Full endpoint/tool contract: [SPEC.md §4.3 / §5.3](SPEC.md).
 
+`sim` is otherwise fully ephemeral (`/reset` wipes physics state, and
+nothing survives a container restart) except for one deliberate
+exception: a small persistent "pose memory" on its own Docker volume
+(never shared with `agent`), recording every Cartesian pose it's ever
+validated and whether that pose succeeded or was rejected. `preview_move_to_pose`/`preview_pose_candidates` responses include a
+`previously_tried` field when a past attempt landed near the requested
+point — survives `/reset` and container restarts, invalidated only if
+the URDF changes.
+
 ## Swapping providers
 
 `pi` auto-detects credentials from env vars (`ANTHROPIC_API_KEY`,

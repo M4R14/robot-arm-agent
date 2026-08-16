@@ -12,7 +12,11 @@ after the call returns), so sequencing matters:
    rejected.
 2. Before committing to a move you're unsure about, call
    `preview_move_joint` or `preview_move_to_pose` first. Same validation,
-   no motion.
+   no motion. `preview_move_to_pose`/`preview_pose_candidates` responses
+   may include `previously_tried` — a fact recorded from an earlier call
+   near that same point, possibly from a past session (this persists
+   across resets and restarts). Trust it; you don't need to re-derive
+   what's already known.
 3. After `move_joint`, `move_joints`, `move_to_pose`, or
    `move_trajectory`, call `wait_for_arm` before any dependent next step
    (e.g. before gripping at a pose you just moved to).

@@ -4,6 +4,11 @@ resulting pose for reachability, self-collision, and kinematic
 singularity. Read-only with respect to the arm's commanded state — never
 issues a motor command. That's SynchronizedMotionDriver's job.
 
+Also the single choke point every Cartesian pose passes through (both
+real moves and previews), so it's where pose-memory recording happens —
+one place to keep it consistent rather than duplicating the record call
+at every caller.
+
 Not thread-safe on its own — touches the shared PyBullet client via
 `adapter.dry_run`. Callers must hold the same lock the adapter requires.
 """
@@ -18,12 +23,14 @@ from ..constants import (
     SINGULARITY_CONDITION_THRESHOLD,
 )
 from .exceptions import NearSingularityError, SelfCollisionError, UnreachablePoseError
+from .pose_memory import PoseMemory
 from .util import clamp, distance
 
 
 class MotionValidator:
-    def __init__(self, adapter: PyBulletAdapter) -> None:
+    def __init__(self, adapter: PyBulletAdapter, pose_memory: Optional[PoseMemory] = None) -> None:
         self._adapter = adapter
+        self._pose_memory = pose_memory or PoseMemory()
 
     def clamp_to_joint_limits(self, joint_id: int, target_deg: float) -> float:
         """Clamps to the intersection of the URDF's real per-joint hardware
@@ -33,14 +40,27 @@ class MotionValidator:
         hi = min(JOINT_ANGLE_MAX_DEG, urdf_upper)
         return clamp(target_deg, lo, hi)
 
+    def recall_pose(self, position: List[float]):
+        return self._pose_memory.lookup_near(position)
+
     def validate_or_raise(
         self, candidate: Dict[int, float], requested_position: Optional[List[float]] = None
     ) -> List[float]:
         achieved_position, collision_free, condition_number = self._adapter.dry_run(candidate)
+
+        error: Optional[Exception] = None
         if requested_position is not None and distance(achieved_position, requested_position) > IK_REACHABLE_TOLERANCE_M:
-            raise UnreachablePoseError(requested_position, achieved_position)
-        if not collision_free:
-            raise SelfCollisionError()
-        if condition_number > SINGULARITY_CONDITION_THRESHOLD:
-            raise NearSingularityError(condition_number)
+            error = UnreachablePoseError(requested_position, achieved_position)
+        elif not collision_free:
+            error = SelfCollisionError()
+        elif condition_number > SINGULARITY_CONDITION_THRESHOLD:
+            error = NearSingularityError(condition_number)
+
+        if requested_position is not None:
+            self._pose_memory.record(
+                requested_position, "rejected" if error else "ok", error.error_code if error else None
+            )
+
+        if error is not None:
+            raise error
         return achieved_position

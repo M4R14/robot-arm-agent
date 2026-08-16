@@ -120,9 +120,16 @@ class PreviewMoveToPoseRequest(PoseTarget):
     relative: bool = False
 
 
+class PreviouslyTried(BaseModel):
+    outcome: str
+    error_code: Optional[str] = None
+    recorded_at: float
+
+
 class PreviewResponse(BaseModel):
     ok: bool
     reason: Optional[str] = None
+    previously_tried: Optional[PreviouslyTried] = None
 
 
 class StopRequest(BaseModel):
@@ -173,6 +180,7 @@ class PreviewCandidateResult(BaseModel):
     index: int
     ok: bool
     reason: Optional[str] = None
+    previously_tried: Optional[PreviouslyTried] = None
 
 
 class PreviewCandidatesResponse(BaseModel):

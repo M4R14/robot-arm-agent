@@ -26,7 +26,7 @@ export function registerPoseTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "preview_move_to_pose",
     label: "Preview Move To Pose",
-    description: "Check whether move_to_pose would succeed, without moving the arm.",
+    description: "Check whether move_to_pose would succeed, without moving the arm. The response's previously_tried field (if present) is a fact recorded from an earlier call near this same point — from this session, an earlier one, or even before the last container restart — so you don't have to relearn what's already known.",
     parameters: Type.Object({
       ...PoseFields,
       relative: Type.Optional(Type.Boolean({ description: "If true, (x, y, z) is added to the current end-effector position" })),
@@ -40,7 +40,7 @@ export function registerPoseTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "preview_pose_candidates",
     label: "Preview Pose Candidates",
-    description: "Check several candidate (x, y, z) poses in one call — which are reachable/collision-free, without moving the arm. Use this instead of calling preview_move_to_pose once per candidate.",
+    description: "Check several candidate (x, y, z) poses in one call — which are reachable/collision-free, without moving the arm. Use this instead of calling preview_move_to_pose once per candidate. Each result's previously_tried field (if present) is a fact recorded from an earlier call near that point.",
     parameters: Type.Object({
       candidates: Type.Array(Type.Object(PoseFields), { description: "Poses to check, in the same order as the results" }),
     }),

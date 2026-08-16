@@ -32,8 +32,15 @@ from .support.exceptions import JointOutOfRangeError
 from .support.idempotency_cache import IdempotencyCache
 from .support.motion_driver import SynchronizedMotionDriver
 from .support.motion_validator import MotionValidator
+from .support.pose_memory import PoseFact
 from .support.rate_limiter import RateLimiter
 from .support.util import clamp
+
+
+def _fact_to_dict(fact: Optional[PoseFact]) -> Optional[Dict]:
+    if fact is None:
+        return None
+    return {"outcome": fact.outcome, "error_code": fact.error_code, "recorded_at": fact.recorded_at}
 
 
 class ArmService:
@@ -173,7 +180,9 @@ class ArmService:
     def get_error_recovery_hints(self) -> Dict[str, str]:
         return dict(ERROR_RECOVERY_HINTS)
 
-    def preview_candidates(self, candidates: List[Dict[str, Optional[float]]]) -> List[Tuple[bool, Optional[str]]]:
+    def preview_candidates(
+        self, candidates: List[Dict[str, Optional[float]]]
+    ) -> List[Tuple[bool, Optional[str], Optional[Dict]]]:
         return [self.preview_move_to_pose(**candidate) for candidate in candidates]
 
     # --- move_joint ----------------------------------------------------------
@@ -302,11 +311,12 @@ class ArmService:
         pitch_deg: Optional[float] = None,
         yaw_deg: Optional[float] = None,
         relative: bool = False,
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[str], Optional[Dict]]:
         with self._lock:
             if relative:
                 current_ee = self._adapter.get_end_effector_position()
                 x, y, z = current_ee[0] + x, current_ee[1] + y, current_ee[2] + z
+            previously_tried = _fact_to_dict(self._validator.recall_pose([x, y, z]))
             orientation_quat = None
             if roll_deg is not None and pitch_deg is not None and yaw_deg is not None:
                 orientation_quat = self._adapter.euler_deg_to_quaternion(roll_deg, pitch_deg, yaw_deg)
@@ -318,8 +328,8 @@ class ArmService:
             try:
                 self._validator.validate_or_raise(candidate, requested_position=[x, y, z])
             except ValueError as exc:
-                return False, str(exc)
-        return True, None
+                return False, str(exc), previously_tried
+        return True, None, previously_tried
 
     # --- move_trajectory (sequential waypoints) ---------------------------------
 
