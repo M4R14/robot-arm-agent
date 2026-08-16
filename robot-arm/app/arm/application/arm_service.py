@@ -20,6 +20,7 @@ from ..adapters.driven.pybullet_physics_adapter import PyBulletAdapter
 from ..constants import DEFAULT_WAIT_TIMEOUT_S, HOME_POSE_DEG, MAX_FORCE, RESET_SETTLE_STEPS
 from ..domain.capabilities_queries import CapabilitiesQueries
 from ..domain.joint_commands import JointCommands
+from ..domain.macro_commands import MacroCommands
 from ..domain.motion_driver import SynchronizedMotionDriver
 from ..domain.motion_validator import MotionValidator
 from ..domain.ports import ArmPhysicsPort, JointAngle, PoseMemoryPort
@@ -56,6 +57,9 @@ class ArmService:
         self._pose_commands = PoseCommands(self._adapter, self._validator, self._driver)
         self._state_queries = StateQueries(self._lock, self._adapter)
         self._capabilities_queries = CapabilitiesQueries(self._lock, self._adapter)
+        self._macro_commands = MacroCommands(
+            self._lock, self._rate_limiter, self._pose_commands, self.wait_reached, self._grip_locked
+        )
         self._target_angles_deg: Dict[int, float] = {}
         self.grip_force = 0.0
         self._drive_to_home_pose()
@@ -240,50 +244,23 @@ class ArmService:
     def grip(self, force: float) -> float:
         return self._outcome.guarded(lambda: self._locked_rate_limited(lambda: self._grip_locked(force)))
 
-    # --- pick_and_place (macro, orchestrates PoseCommands + grip) --------------
+    # --- pick_and_place (delegated to MacroCommands) ----------------------------
 
     def pick_and_place(
         self, pick: Dict[str, Optional[float]], place: Dict[str, Optional[float]], grip_force: float
     ) -> Dict[str, bool]:
-        # Multiple locked sections with unlocked wait_reached() calls between
-        # them, so this can't use _locked_rate_limited (one locked call) —
-        # only _outcome.guarded (success/failure recording) applies here.
-        def _do() -> Dict[str, bool]:
-            self._locked_rate_limited(
-                lambda: self._pose_commands.move_to_pose_locked(
-                    pick.get("x"), pick.get("y"), pick.get("z"),
-                    pick.get("roll_deg"), pick.get("pitch_deg"), pick.get("yaw_deg"),
-                    pick.get("relative", False), self._target_angles_deg,
-                )
-            )
-            reached_pick, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
+        # MacroCommands re-acquires the lock itself per step (unlocked
+        # wait_reached() calls between them), so only _outcome.guarded
+        # (success/failure recording) wraps it here — not _locked_rate_limited.
+        return self._outcome.guarded(
+            lambda: self._macro_commands.pick_and_place_locked(pick, place, grip_force, self._target_angles_deg)
+        )
 
-            with self._lock:
-                self._grip_locked(grip_force)
-
-            with self._lock:
-                self._pose_commands.move_to_pose_locked(
-                    place.get("x"), place.get("y"), place.get("z"),
-                    place.get("roll_deg"), place.get("pitch_deg"), place.get("yaw_deg"),
-                    place.get("relative", False), self._target_angles_deg,
-                )
-            reached_place, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
-
-            with self._lock:
-                self._grip_locked(0.0)
-            return {"reached_pick": reached_pick, "reached_place": reached_place}
-
-        return self._outcome.guarded(_do)
-
-    # --- stop (emergency, never rate-limited) -----------------------------------
+    # --- stop (emergency, never rate-limited, delegated to JointCommands) ------
 
     def stop(self, joint_ids: Optional[List[int]] = None) -> None:
         with self._lock:
-            for joint in self._adapter.get_joint_angles_deg():
-                if joint_ids is not None and joint.joint_id not in joint_ids:
-                    continue
-                self._adapter.set_joint_target_deg(joint.joint_id, joint.angle_deg)
-                self._target_angles_deg[joint.joint_id] = joint.angle_deg
+            self._joint_commands.stop_locked(joint_ids, self._target_angles_deg)
 
     # --- reset -----------------------------------------------------------------
 

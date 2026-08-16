@@ -74,3 +74,12 @@ class JointCommands:
         moved_only = {joint_id: candidate[joint_id] for joint_id, _ in targets}
         self._driver.drive(moved_only, current_angles_deg, target_angles_deg)
         return moved_only
+
+    def stop_locked(self, joint_ids: Optional[List[int]], target_angles_deg: Dict[int, float]) -> None:
+        """Caller must hold the adapter's lock. Emergency stop: re-target
+        each joint at its current angle so it freezes in place."""
+        for joint in self._adapter.get_joint_angles_deg():
+            if joint_ids is not None and joint.joint_id not in joint_ids:
+                continue
+            self._adapter.set_joint_target_deg(joint.joint_id, joint.angle_deg)
+            target_angles_deg[joint.joint_id] = joint.angle_deg
