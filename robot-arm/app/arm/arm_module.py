@@ -8,14 +8,25 @@ or DTO shaping lives here — each of those is one file with one job.
 from fastapi import APIRouter
 
 from .arm_service import ArmService
-from .routes import gripper_routes, joint_routes, macro_routes, pose_routes, safety_routes, state_routes
+from .routes import (
+    capabilities_routes,
+    gripper_routes,
+    joint_routes,
+    macro_routes,
+    pose_routes,
+    safety_routes,
+    state_routes,
+    trajectory_routes,
+)
 
 service = ArmService()
 
 router = APIRouter()
 router.include_router(state_routes.build_router(service))
+router.include_router(capabilities_routes.build_router(service))
 router.include_router(joint_routes.build_router(service))
 router.include_router(pose_routes.build_router(service))
+router.include_router(trajectory_routes.build_router(service))
 router.include_router(gripper_routes.build_router(service))
 router.include_router(macro_routes.build_router(service))
 router.include_router(safety_routes.build_router(service))

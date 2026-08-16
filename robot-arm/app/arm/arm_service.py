@@ -1,9 +1,9 @@
 """Coordinates the robot arm's collaborators — rate limiting, idempotency,
 validation, and synchronized motion — around the PyBullet adapter. Owns
 the sim lock, the physics stepping thread, and the shared mutable state
-(commanded joint targets, grip force). Each collaborator has one job;
-this class's job is wiring them together and exposing the operations the
-HTTP layer calls. Never trusts caller-supplied ranges.
+(commanded joint targets, grip force, last error). Each collaborator has
+one job; this class's job is wiring them together and exposing the
+operations the HTTP layer calls. Never trusts caller-supplied ranges.
 """
 
 import threading
@@ -14,11 +14,16 @@ from .adapters.pybullet_adapter import JointAngle, PyBulletAdapter
 from .constants import (
     DEFAULT_WAIT_TIMEOUT_S,
     HOME_POSE_DEG,
+    IK_REACHABLE_TOLERANCE_M,
     JOINT_REACHED_TOLERANCE_DEG,
     MAX_FORCE,
+    MAX_JOINT_VELOCITY_DEG_S,
     MAX_WAIT_TIMEOUT_S,
+    MIN_COMMAND_INTERVAL_S,
     RESET_SETTLE_STEPS,
     SIM_HZ,
+    SINGULARITY_CONDITION_THRESHOLD,
+    URDF_PATH,
     WAIT_POLL_INTERVAL_S,
 )
 from .support.exceptions import JointOutOfRangeError
@@ -46,6 +51,7 @@ class ArmService:
         self._driver = driver or SynchronizedMotionDriver(self._adapter)
         self._stop_stepping = threading.Event()
         self._target_angles_deg: Dict[int, float] = {}
+        self._last_error: Optional[Dict[str, str]] = None
         self.grip_force = 0.0
         self._drive_to_home_pose()
 
@@ -80,14 +86,27 @@ class ArmService:
     def remember_idempotent(self, command_id: Optional[str], payload: dict) -> None:
         self._idempotency_cache.remember(command_id, payload)
 
+    # --- last-command-error tracking ----------------------------------------
+    # Self-locking so they're safe to call from outside any `with self._lock`
+    # block (e.g. right after a locked block raises and releases the lock).
+
+    def _note_error(self, exc: Exception) -> None:
+        with self._lock:
+            self._last_error = {"error_code": getattr(exc, "error_code", "ERROR"), "message": str(exc)}
+
+    def _note_success(self) -> None:
+        with self._lock:
+            self._last_error = None
+
     # --- reads -------------------------------------------------------------
 
-    def get_state(self) -> Tuple[List[JointAngle], List[float], Dict[int, float]]:
+    def get_state(self) -> Tuple[List[JointAngle], List[float], Dict[int, float], Optional[Dict[str, str]]]:
         with self._lock:
             joints = self._adapter.get_joint_angles_deg()
             ee_position = self._adapter.get_end_effector_position()
             targets = dict(self._target_angles_deg)
-        return joints, ee_position, targets
+            last_error = dict(self._last_error) if self._last_error else None
+        return joints, ee_position, targets, last_error
 
     def is_reached(self, joint_id: int, angle_deg: float, targets: Dict[int, float]) -> bool:
         target = targets.get(joint_id)
@@ -101,7 +120,7 @@ class ArmService:
         clamped_timeout = clamp(timeout_s if timeout_s is not None else DEFAULT_WAIT_TIMEOUT_S, 0.0, MAX_WAIT_TIMEOUT_S)
         deadline = time.monotonic() + clamped_timeout
         while True:
-            joints, _ee_position, targets = self.get_state()
+            joints, _ee_position, targets, _last_error = self.get_state()
             relevant = [j for j in joints if joint_ids is None or j.joint_id in joint_ids]
             if all(self.is_reached(j.joint_id, j.angle_deg, targets) for j in relevant):
                 return True, False, joints, targets
@@ -109,11 +128,35 @@ class ArmService:
                 return False, True, joints, targets
             time.sleep(WAIT_POLL_INTERVAL_S)
 
+    def get_capabilities(self) -> Dict:
+        with self._lock:
+            joint_ids = list(self._adapter.movable_joints)
+            joint_limits = [
+                {"joint_id": j, "min_deg": lo, "max_deg": hi}
+                for j, (lo, hi) in self._adapter.joint_limits_deg.items()
+            ]
+        return {
+            "urdf_path": URDF_PATH,
+            "joint_ids": joint_ids,
+            "joint_limits": joint_limits,
+            "max_force": MAX_FORCE,
+            "max_joint_velocity_deg_s": MAX_JOINT_VELOCITY_DEG_S,
+            "singularity_condition_threshold": SINGULARITY_CONDITION_THRESHOLD,
+            "ik_reachable_tolerance_m": IK_REACHABLE_TOLERANCE_M,
+            "min_command_interval_s": MIN_COMMAND_INTERVAL_S,
+            "default_wait_timeout_s": DEFAULT_WAIT_TIMEOUT_S,
+            "max_wait_timeout_s": MAX_WAIT_TIMEOUT_S,
+            "home_pose_deg": dict(HOME_POSE_DEG),
+        }
+
     # --- move_joint ----------------------------------------------------------
 
-    def _move_joint_locked(self, joint_id: int, target_angle_deg: float) -> float:
+    def _move_joint_locked(self, joint_id: int, target_angle_deg: float, relative: bool = False) -> float:
         if joint_id not in self._adapter.movable_joints:
             raise JointOutOfRangeError(joint_id, self._adapter.movable_joints)
+        if relative:
+            current_deg = next(j.angle_deg for j in self._adapter.get_joint_angles_deg() if j.joint_id == joint_id)
+            target_angle_deg = current_deg + target_angle_deg
         clamped_deg = self._validator.clamp_to_joint_limits(joint_id, target_angle_deg)
         candidate = {j.joint_id: j.angle_deg for j in self._adapter.get_joint_angles_deg()}
         candidate[joint_id] = clamped_deg
@@ -122,15 +165,26 @@ class ArmService:
         self._target_angles_deg[joint_id] = clamped_deg
         return clamped_deg
 
-    def move_joint(self, joint_id: int, target_angle_deg: float) -> float:
-        with self._lock:
-            self._rate_limiter.check()
-            return self._move_joint_locked(joint_id, target_angle_deg)
+    def move_joint(self, joint_id: int, target_angle_deg: float, relative: bool = False) -> float:
+        try:
+            with self._lock:
+                self._rate_limiter.check()
+                result = self._move_joint_locked(joint_id, target_angle_deg, relative)
+        except Exception as exc:
+            self._note_error(exc)
+            raise
+        self._note_success()
+        return result
 
-    def preview_move_joint(self, joint_id: int, target_angle_deg: float) -> Tuple[bool, Optional[str]]:
+    def preview_move_joint(
+        self, joint_id: int, target_angle_deg: float, relative: bool = False
+    ) -> Tuple[bool, Optional[str]]:
         with self._lock:
             if joint_id not in self._adapter.movable_joints:
                 return False, str(JointOutOfRangeError(joint_id, self._adapter.movable_joints))
+            if relative:
+                current_deg = next(j.angle_deg for j in self._adapter.get_joint_angles_deg() if j.joint_id == joint_id)
+                target_angle_deg = current_deg + target_angle_deg
             clamped_deg = self._validator.clamp_to_joint_limits(joint_id, target_angle_deg)
             candidate = {j.joint_id: j.angle_deg for j in self._adapter.get_joint_angles_deg()}
             candidate[joint_id] = clamped_deg
@@ -142,20 +196,26 @@ class ArmService:
 
     # --- move_joints (batch) --------------------------------------------------
 
-    def move_joints(self, targets: List[Tuple[int, float]]) -> Dict[int, float]:
-        with self._lock:
-            self._rate_limiter.check()
-            current_angles_deg = {j.joint_id: j.angle_deg for j in self._adapter.get_joint_angles_deg()}
-            candidate = dict(current_angles_deg)
-            for joint_id, target_deg in targets:
-                if joint_id not in self._adapter.movable_joints:
-                    raise JointOutOfRangeError(joint_id, self._adapter.movable_joints)
-                candidate[joint_id] = self._validator.clamp_to_joint_limits(joint_id, target_deg)
+    def move_joints(self, targets: List[Tuple[int, float]], relative: bool = False) -> Dict[int, float]:
+        try:
+            with self._lock:
+                self._rate_limiter.check()
+                current_angles_deg = {j.joint_id: j.angle_deg for j in self._adapter.get_joint_angles_deg()}
+                candidate = dict(current_angles_deg)
+                for joint_id, target_deg in targets:
+                    if joint_id not in self._adapter.movable_joints:
+                        raise JointOutOfRangeError(joint_id, self._adapter.movable_joints)
+                    effective_deg = current_angles_deg[joint_id] + target_deg if relative else target_deg
+                    candidate[joint_id] = self._validator.clamp_to_joint_limits(joint_id, effective_deg)
 
-            self._validator.validate_or_raise(candidate)
+                self._validator.validate_or_raise(candidate)
 
-            moved_only = {joint_id: candidate[joint_id] for joint_id, _ in targets}
-            self._driver.drive(moved_only, current_angles_deg, self._target_angles_deg)
+                moved_only = {joint_id: candidate[joint_id] for joint_id, _ in targets}
+                self._driver.drive(moved_only, current_angles_deg, self._target_angles_deg)
+        except Exception as exc:
+            self._note_error(exc)
+            raise
+        self._note_success()
         return moved_only
 
     # --- move_to_pose ----------------------------------------------------------
@@ -168,7 +228,12 @@ class ArmService:
         roll_deg: Optional[float] = None,
         pitch_deg: Optional[float] = None,
         yaw_deg: Optional[float] = None,
+        relative: bool = False,
     ) -> None:
+        if relative:
+            current_ee = self._adapter.get_end_effector_position()
+            x, y, z = current_ee[0] + x, current_ee[1] + y, current_ee[2] + z
+
         orientation_quat = None
         if roll_deg is not None and pitch_deg is not None and yaw_deg is not None:
             orientation_quat = self._adapter.euler_deg_to_quaternion(roll_deg, pitch_deg, yaw_deg)
@@ -190,10 +255,16 @@ class ArmService:
         roll_deg: Optional[float] = None,
         pitch_deg: Optional[float] = None,
         yaw_deg: Optional[float] = None,
+        relative: bool = False,
     ) -> None:
-        with self._lock:
-            self._rate_limiter.check()
-            self._move_to_pose_locked(x, y, z, roll_deg, pitch_deg, yaw_deg)
+        try:
+            with self._lock:
+                self._rate_limiter.check()
+                self._move_to_pose_locked(x, y, z, roll_deg, pitch_deg, yaw_deg, relative)
+        except Exception as exc:
+            self._note_error(exc)
+            raise
+        self._note_success()
 
     def preview_move_to_pose(
         self,
@@ -203,8 +274,12 @@ class ArmService:
         roll_deg: Optional[float] = None,
         pitch_deg: Optional[float] = None,
         yaw_deg: Optional[float] = None,
+        relative: bool = False,
     ) -> Tuple[bool, Optional[str]]:
         with self._lock:
+            if relative:
+                current_ee = self._adapter.get_end_effector_position()
+                x, y, z = current_ee[0] + x, current_ee[1] + y, current_ee[2] + z
             orientation_quat = None
             if roll_deg is not None and pitch_deg is not None and yaw_deg is not None:
                 orientation_quat = self._adapter.euler_deg_to_quaternion(roll_deg, pitch_deg, yaw_deg)
@@ -219,6 +294,27 @@ class ArmService:
                 return False, str(exc)
         return True, None
 
+    # --- move_trajectory (sequential waypoints) ---------------------------------
+
+    def move_trajectory(self, waypoints: List[Dict[str, Optional[float]]]) -> List[Dict]:
+        results: List[Dict] = []
+        all_ok = True
+        for index, waypoint in enumerate(waypoints):
+            try:
+                with self._lock:
+                    self._rate_limiter.check()
+                    self._move_to_pose_locked(**waypoint)
+            except Exception as exc:
+                self._note_error(exc)
+                results.append({"index": index, "ok": False, "reached": False, "reason": str(exc)})
+                all_ok = False
+                break
+            reached, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
+            results.append({"index": index, "ok": True, "reached": reached, "reason": None})
+        if all_ok:
+            self._note_success()
+        return results
+
     # --- grip ----------------------------------------------------------------
 
     def _grip_locked(self, force: float) -> float:
@@ -227,37 +323,49 @@ class ArmService:
         return clamped_force
 
     def grip(self, force: float) -> float:
-        with self._lock:
-            self._rate_limiter.check()
-            return self._grip_locked(force)
+        try:
+            with self._lock:
+                self._rate_limiter.check()
+                result = self._grip_locked(force)
+        except Exception as exc:
+            self._note_error(exc)
+            raise
+        self._note_success()
+        return result
 
     # --- pick_and_place (macro) ------------------------------------------------
 
     def pick_and_place(
         self, pick: Dict[str, Optional[float]], place: Dict[str, Optional[float]], grip_force: float
     ) -> Dict[str, bool]:
-        with self._lock:
-            self._rate_limiter.check()
-            self._move_to_pose_locked(**pick)
-        reached_pick, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
+        try:
+            with self._lock:
+                self._rate_limiter.check()
+                self._move_to_pose_locked(**pick)
+            reached_pick, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
 
-        with self._lock:
-            self._grip_locked(grip_force)
+            with self._lock:
+                self._grip_locked(grip_force)
 
-        with self._lock:
-            self._move_to_pose_locked(**place)
-        reached_place, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
+            with self._lock:
+                self._move_to_pose_locked(**place)
+            reached_place, _timed_out, _joints, _targets = self.wait_reached(None, DEFAULT_WAIT_TIMEOUT_S)
 
-        with self._lock:
-            self._grip_locked(0.0)
-
+            with self._lock:
+                self._grip_locked(0.0)
+        except Exception as exc:
+            self._note_error(exc)
+            raise
+        self._note_success()
         return {"reached_pick": reached_pick, "reached_place": reached_place}
 
     # --- stop (emergency, never rate-limited) -----------------------------------
 
-    def stop(self) -> None:
+    def stop(self, joint_ids: Optional[List[int]] = None) -> None:
         with self._lock:
             for joint in self._adapter.get_joint_angles_deg():
+                if joint_ids is not None and joint.joint_id not in joint_ids:
+                    continue
                 self._adapter.set_joint_target_deg(joint.joint_id, joint.angle_deg)
                 self._target_angles_deg[joint.joint_id] = joint.angle_deg
 
@@ -270,5 +378,6 @@ class ArmService:
                 self._adapter.step()
             self._target_angles_deg.clear()
             self.grip_force = 0.0
+            self._last_error = None
             self._idempotency_cache.clear()
             self._drive_to_home_pose()

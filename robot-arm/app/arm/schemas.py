@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -16,9 +16,17 @@ class JointState(BaseModel):
     reached: bool = True
 
 
+class LastError(BaseModel):
+    error_code: str
+    message: str
+
+
 class StateResponse(BaseModel):
     joints: List[JointState]
     end_effector_position: List[float]
+    grip_force: float
+    last_error: Optional[LastError] = None
+    summary: str
 
 
 class PoseTarget(BaseModel):
@@ -38,16 +46,37 @@ class JointTarget(BaseModel):
 class MoveJointRequest(BaseModel):
     joint_id: int
     target_angle_deg: float
+    relative: bool = False
     command_id: Optional[str] = None
 
 
 class MoveJointsRequest(BaseModel):
     targets: List[JointTarget]
+    relative: bool = False
     command_id: Optional[str] = None
 
 
 class MoveToPoseRequest(PoseTarget):
+    relative: bool = False
     command_id: Optional[str] = None
+
+
+class MoveTrajectoryRequest(BaseModel):
+    waypoints: List[PoseTarget]
+    command_id: Optional[str] = None
+
+
+class WaypointResult(BaseModel):
+    index: int
+    ok: bool
+    reached: bool
+    reason: Optional[str] = None
+
+
+class MoveTrajectoryResponse(BaseModel):
+    ok: bool
+    waypoints: List[WaypointResult]
+    message: str
 
 
 class GripRequest(BaseModel):
@@ -83,15 +112,40 @@ class WaitReachedResponse(BaseModel):
 class PreviewMoveJointRequest(BaseModel):
     joint_id: int
     target_angle_deg: float
+    relative: bool = False
 
 
 class PreviewMoveToPoseRequest(PoseTarget):
-    pass
+    relative: bool = False
 
 
 class PreviewResponse(BaseModel):
     ok: bool
     reason: Optional[str] = None
+
+
+class StopRequest(BaseModel):
+    joint_ids: Optional[List[int]] = None
+
+
+class JointLimit(BaseModel):
+    joint_id: int
+    min_deg: float
+    max_deg: float
+
+
+class CapabilitiesResponse(BaseModel):
+    urdf_path: str
+    joint_ids: List[int]
+    joint_limits: List[JointLimit]
+    max_force: float
+    max_joint_velocity_deg_s: float
+    singularity_condition_threshold: float
+    ik_reachable_tolerance_m: float
+    min_command_interval_s: float
+    default_wait_timeout_s: float
+    max_wait_timeout_s: float
+    home_pose_deg: Dict[int, float]
 
 
 class ActionResponse(BaseModel):

@@ -4,8 +4,8 @@ from fastapi import APIRouter
 
 from ..arm_service import ArmService
 from ..schemas import ActionResponse, MoveToPoseRequest, PreviewMoveToPoseRequest, PreviewResponse
-from ..support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
 from ..support.error_mapping import raise_http
+from ..support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
 from ..support.idempotency import with_idempotency
 
 
@@ -16,7 +16,7 @@ def build_router(service: ArmService) -> APIRouter:
     def move_to_pose(req: MoveToPoseRequest) -> ActionResponse:
         def build() -> ActionResponse:
             try:
-                service.move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg)
+                service.move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative)
             except (UnreachablePoseError, SelfCollisionError, NearSingularityError) as exc:
                 raise_http(exc, 400)
             except RateLimitedError as exc:
@@ -27,7 +27,7 @@ def build_router(service: ArmService) -> APIRouter:
 
     @router.post("/preview_move_to_pose", response_model=PreviewResponse)
     def preview_move_to_pose(req: PreviewMoveToPoseRequest) -> PreviewResponse:
-        ok, reason = service.preview_move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg)
+        ok, reason = service.preview_move_to_pose(req.x, req.y, req.z, req.roll_deg, req.pitch_deg, req.yaw_deg, req.relative)
         return PreviewResponse(ok=ok, reason=reason)
 
     return router

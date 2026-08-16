@@ -4,8 +4,8 @@ from fastapi import APIRouter
 
 from ..arm_service import ArmService
 from ..schemas import ActionResponse, MoveJointRequest, MoveJointsRequest, PreviewMoveJointRequest, PreviewResponse
-from ..support.exceptions import JointOutOfRangeError, NearSingularityError, RateLimitedError, SelfCollisionError
 from ..support.error_mapping import raise_http
+from ..support.exceptions import JointOutOfRangeError, NearSingularityError, RateLimitedError, SelfCollisionError
 from ..support.idempotency import with_idempotency
 
 
@@ -16,7 +16,7 @@ def build_router(service: ArmService) -> APIRouter:
     def move_joint(req: MoveJointRequest) -> ActionResponse:
         def build() -> ActionResponse:
             try:
-                clamped_deg = service.move_joint(req.joint_id, req.target_angle_deg)
+                clamped_deg = service.move_joint(req.joint_id, req.target_angle_deg, req.relative)
             except JointOutOfRangeError as exc:
                 raise_http(exc, 400)
             except (SelfCollisionError, NearSingularityError) as exc:
@@ -31,7 +31,7 @@ def build_router(service: ArmService) -> APIRouter:
     def move_joints(req: MoveJointsRequest) -> ActionResponse:
         def build() -> ActionResponse:
             try:
-                clamped = service.move_joints([(t.joint_id, t.target_angle_deg) for t in req.targets])
+                clamped = service.move_joints([(t.joint_id, t.target_angle_deg) for t in req.targets], req.relative)
             except JointOutOfRangeError as exc:
                 raise_http(exc, 400)
             except (SelfCollisionError, NearSingularityError) as exc:
@@ -45,7 +45,7 @@ def build_router(service: ArmService) -> APIRouter:
 
     @router.post("/preview_move_joint", response_model=PreviewResponse)
     def preview_move_joint(req: PreviewMoveJointRequest) -> PreviewResponse:
-        ok, reason = service.preview_move_joint(req.joint_id, req.target_angle_deg)
+        ok, reason = service.preview_move_joint(req.joint_id, req.target_angle_deg, req.relative)
         return PreviewResponse(ok=ok, reason=reason)
 
     return router

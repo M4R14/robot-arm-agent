@@ -36,11 +36,29 @@ automatically, but for reliable use, set `defaultModel` in
 `sim` runs PyBullet headless (`p.connect(p.DIRECT)`, no ports exposed —
 required by [SPEC.md](SPEC.md)'s isolation rules), so there's nothing to
 look at by default. `watch-arm.py` opens a local 3D viewer on your host
-that mirrors the live joint state without breaking that isolation: it
-polls `sim`'s own `/state` endpoint via `docker compose exec` (never a
-direct network route to `sim`) and drives a second, host-side PyBullet
-GUI window with the same URDF using real motor control, so the arm eases
-into position instead of teleporting.
+that mirrors the live state without breaking that isolation: it never
+opens a direct network route to `sim`. On startup it fetches the URDF
+path from `sim`'s own `/capabilities` (never hardcoded, so the viewer
+always matches whatever model is actually loaded), then spawns a single
+long-lived `docker compose exec` process that loops inside the `sim`
+container polling its own `/state` and streaming one JSON line per tick
+back over stdout — cheaper than re-spawning `docker compose exec` on
+every poll, and self-healing (exponential-backoff restart) if the stream
+ever dies.
+
+The window shows:
+- the arm's **actual** pose, driven by a real position-control motor +
+  `stepSimulation` so it eases into place instead of teleporting between
+  updates;
+- a translucent **ghost** of the arm at its *commanded target* pose, so
+  you can see how far an in-flight move still has to go;
+- an on-screen overlay of `sim`'s own state summary, grip force, and the
+  last rejected command's error (if any), turning red — and showing a
+  "STALE" warning with the age in seconds — if the stream goes quiet.
+
+Camera: mouse drag orbits, scroll zooms, ctrl+drag pans (PyBullet's
+built-in GUI navigation). Keyboard: `1`/`2`/`3`/`4` jump to
+front/side/top/isometric presets, `r` resets to the startup view.
 
 Requires `pybullet` on the host: `pip3 install --user pybullet`.
 
@@ -50,7 +68,9 @@ python3 watch-arm.py &
 
 Leave it running, then drive the arm as usual via `docker compose attach
 agent` (or any `move_joint` / `move_to_pose` / `grip` call) — the window
-updates in real time. Stop it with `pkill -f watch-arm.py`.
+updates in real time. Stop it with `pkill -f watch-arm.py` (or Ctrl+C
+in its terminal — either way it cleans up its `docker compose exec`
+subprocess rather than leaving it orphaned).
 
 ## Tools the agent can call
 

@@ -84,17 +84,19 @@ as code.
 | Method | Path                   | Request body | Response | Notes |
 |--------|------------------------|--------------|----------|-------|
 | GET    | `/health`              | — | `{ ok: bool }` | for `docker compose` healthcheck |
-| GET    | `/state`               | — | `{ joints: [{joint_id, angle_deg, velocity_deg_s, applied_torque, target_angle_deg, reached}], end_effector_position: [x,y,z] }` | read-only |
+| GET    | `/state`               | — | `{ joints: [{joint_id, angle_deg, velocity_deg_s, applied_torque, target_angle_deg, reached}], end_effector_position: [x,y,z], grip_force: float, last_error?: {error_code, message}, summary: str }` | read-only; `last_error` clears on the next successful mutating command |
+| GET    | `/capabilities`        | — | `{ joint_ids, joint_limits: [{joint_id, min_deg, max_deg}], max_force, max_joint_velocity_deg_s, singularity_condition_threshold, ik_reachable_tolerance_m, min_command_interval_s, default_wait_timeout_s, max_wait_timeout_s, home_pose_deg }` | read-only; static limits/tuning, so a caller can plan instead of guessing |
 | POST   | `/wait_reached`        | `{ joint_ids?: int[], timeout_s?: float }` | `{ reached: bool, timed_out: bool, joints: [...] }` | read-only; blocks (server-clamped timeout) until all named joints reach their commanded target |
-| POST   | `/move_joint`          | `{ joint_id: int, target_angle_deg: float, command_id?: str }` | `{ ok: bool, message: str }` | clamp to the tighter of `[JOINT_ANGLE_MIN_DEG, JOINT_ANGLE_MAX_DEG]` and the joint's real URDF limit; validate `joint_id` in range; reject on self-collision or near-singularity |
-| POST   | `/move_joints`         | `{ targets: [{joint_id, target_angle_deg}], command_id?: str }` | `{ ok: bool, message: str }` | batch of `/move_joint`, validated as one resulting pose, synchronized arrival |
-| POST   | `/preview_move_joint`  | `{ joint_id: int, target_angle_deg: float }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_joint` without moving the arm |
-| POST   | `/move_to_pose`        | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, command_id? }` | `{ ok: bool, message: str }` | inverse kinematics; reject if unreachable, self-colliding, or near-singular |
-| POST   | `/preview_move_to_pose`| `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg? }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_to_pose` without moving the arm |
+| POST   | `/move_joint`          | `{ joint_id: int, target_angle_deg: float, relative?: bool, command_id?: str }` | `{ ok: bool, message: str }` | clamp to the tighter of `[JOINT_ANGLE_MIN_DEG, JOINT_ANGLE_MAX_DEG]` and the joint's real URDF limit; validate `joint_id` in range; reject on self-collision or near-singularity; `relative` adds to the joint's current angle instead of an absolute target |
+| POST   | `/move_joints`         | `{ targets: [{joint_id, target_angle_deg}], relative?: bool, command_id?: str }` | `{ ok: bool, message: str }` | batch of `/move_joint`, validated as one resulting pose, synchronized arrival |
+| POST   | `/preview_move_joint`  | `{ joint_id: int, target_angle_deg: float, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_joint` without moving the arm |
+| POST   | `/move_to_pose`        | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool, command_id? }` | `{ ok: bool, message: str }` | inverse kinematics; reject if unreachable, self-colliding, or near-singular; `relative` adds (x,y,z) to the current end-effector position (orientation stays absolute) |
+| POST   | `/preview_move_to_pose`| `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: bool }` | `{ ok: bool, reason?: str }` | read-only; runs the same validation as `/move_to_pose` without moving the arm |
+| POST   | `/move_trajectory`     | `{ waypoints: PoseTarget[], command_id? }` | `{ ok: bool, waypoints: [{index, ok, reached, reason?}], message: str }` | moves through poses in order, waiting for each; stops at the first waypoint that fails validation rather than skipping it |
 | POST   | `/grip`                | `{ force: float, command_id?: str }` | `{ ok: bool, message: str }` | clamp `force` to `[0, MAX_FORCE]`; current placeholder URDF has no gripper actuator |
 | POST   | `/release`             | — | `{ ok: bool, message: str }` | alias for `/grip` with `force: 0` |
 | POST   | `/pick_and_place`      | `{ pick: PoseTarget, place: PoseTarget, grip_force: float, command_id? }` | `{ ok, reached_pick, reached_place, message }` | composite: move to pick → grip → move to place → release; blocks until done |
-| POST   | `/stop`                | — | `{ ok: bool, message: str }` | halts all joints at their current position; never rate-limited |
+| POST   | `/stop`                | `{ joint_ids?: int[] }` (body optional) | `{ ok: bool, message: str }` | halts named joints (or all, if omitted) at their current position; never rate-limited |
 | POST   | `/reset`               | — | `{ ok: bool, message: str }` | reset simulation to `HOME_POSE_DEG` |
 
 All mutating endpoints accept an optional `command_id: str`; a repeated
@@ -156,22 +158,24 @@ target, even one that looks in-range.
 | Tool name              | Parameters | Calls |
 |------------------------|------------|-------|
 | `get_arm_state`        | *(none)* | `GET /state` |
+| `get_arm_capabilities` | *(none)* | `GET /capabilities` |
 | `wait_for_arm`         | `{ joint_ids?: int[], timeout_s?: number }` | `POST /wait_reached` |
-| `move_joint`           | `{ joint_id: int, target_angle_deg: number }` | `POST /move_joint` |
-| `move_joints`          | `{ targets: [{joint_id, target_angle_deg}] }` | `POST /move_joints` |
-| `preview_move_joint`   | `{ joint_id: int, target_angle_deg: number }` | `POST /preview_move_joint` |
-| `move_to_pose`         | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg? }` | `POST /move_to_pose` |
-| `preview_move_to_pose` | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg? }` | `POST /preview_move_to_pose` |
+| `move_joint`           | `{ joint_id: int, target_angle_deg: number, relative?: boolean }` | `POST /move_joint` |
+| `move_joints`          | `{ targets: [{joint_id, target_angle_deg}], relative?: boolean }` | `POST /move_joints` |
+| `preview_move_joint`   | `{ joint_id: int, target_angle_deg: number, relative?: boolean }` | `POST /preview_move_joint` |
+| `move_to_pose`         | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /move_to_pose` |
+| `preview_move_to_pose` | `{ x, y, z, roll_deg?, pitch_deg?, yaw_deg?, relative?: boolean }` | `POST /preview_move_to_pose` |
+| `move_trajectory`      | `{ waypoints: PoseTarget[] }` | `POST /move_trajectory` |
 | `grip`                 | `{ force: number }` | `POST /grip` |
 | `release_gripper`      | *(none)* | `POST /release` |
 | `pick_and_place`       | `{ pick: PoseTarget, place: PoseTarget, grip_force: number }` | `POST /pick_and_place` |
-| `stop_arm`             | *(none)* | `POST /stop` |
+| `stop_arm`             | `{ joint_ids?: int[] }` | `POST /stop` |
 | `reset_environment`    | *(none)* | `POST /reset` |
 
-`move_joint`, `move_joints`, `move_to_pose`, `grip`, and `pick_and_place`
-also pass the harness's `toolCallId` as `command_id` for idempotent
-retries — never LLM-supplied, so it can't be spoofed or omitted by the
-model.
+`move_joint`, `move_joints`, `move_to_pose`, `move_trajectory`, `grip`, and
+`pick_and_place` also pass the harness's `toolCallId` as `command_id` for
+idempotent retries — never LLM-supplied, so it can't be spoofed or
+omitted by the model.
 
 No tool beyond this set may be registered without updating this spec.
 

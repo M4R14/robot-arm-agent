@@ -43,10 +43,21 @@ export default function (pi: ExtensionAPI) {
     name: "get_arm_state",
     label: "Get Arm State",
     description:
-      "Read the robot arm's current joint angles, velocities, applied torques, commanded targets, and whether each joint has reached its target, plus the end-effector position.",
+      "Read the robot arm's current joint angles, velocities, applied torques, commanded targets, and whether each joint has reached its target, plus the end-effector position, a one-line summary, and the error (if any) from the last rejected command.",
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, signal) {
       return jsonResult(await callSim("/state", "GET", undefined, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "get_arm_capabilities",
+    label: "Get Arm Capabilities",
+    description:
+      "Read the arm's static limits and tuning: per-joint hardware angle limits (tighter than any generic ceiling), max grip force, max joint velocity, the singularity/reachability thresholds used to reject moves, command rate limit, and the home pose. Use this to plan moves that won't just get clamped or rejected.",
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, signal) {
+      return jsonResult(await callSim("/capabilities", "GET", undefined, signal));
     },
   });
 
@@ -72,6 +83,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       joint_id: Type.Integer({ description: "Index of the joint to move" }),
       target_angle_deg: Type.Number({ description: "Target joint angle in degrees" }),
+      relative: Type.Optional(Type.Boolean({ description: "If true, target_angle_deg is added to the joint's current angle instead of being an absolute target" })),
     }),
     async execute(toolCallId, params, signal) {
       return jsonResult(await callSim("/move_joint", "POST", { ...params, command_id: toolCallId }, signal));
@@ -91,6 +103,7 @@ export default function (pi: ExtensionAPI) {
         }),
         { description: "One entry per joint to move" }
       ),
+      relative: Type.Optional(Type.Boolean({ description: "If true, each target_angle_deg is added to that joint's current angle instead of being an absolute target" })),
     }),
     async execute(toolCallId, params, signal) {
       return jsonResult(await callSim("/move_joints", "POST", { ...params, command_id: toolCallId }, signal));
@@ -105,6 +118,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       joint_id: Type.Integer({ description: "Index of the joint to check" }),
       target_angle_deg: Type.Number({ description: "Target joint angle in degrees" }),
+      relative: Type.Optional(Type.Boolean({ description: "If true, target_angle_deg is added to the joint's current angle instead of being an absolute target" })),
     }),
     async execute(_toolCallId, params, signal) {
       return jsonResult(await callSim("/preview_move_joint", "POST", params, signal));
@@ -115,8 +129,11 @@ export default function (pi: ExtensionAPI) {
     name: "move_to_pose",
     label: "Move To Pose",
     description:
-      "Move the robot arm's end effector toward an (x, y, z) position in meters using inverse kinematics. Optionally set a target orientation (roll/pitch/yaw, degrees); omit all three to let the solver pick one. Rejected if the target is outside the arm's reach, would self-collide, or is near a kinematic singularity. Returns immediately; use wait_for_arm to block until it arrives.",
-    parameters: Type.Object(PoseFields),
+      "Move the robot arm's end effector toward an (x, y, z) position in meters using inverse kinematics. Optionally set a target orientation (roll/pitch/yaw, degrees); omit all three to let the solver pick one. If relative is true, (x, y, z) is added to the current end-effector position instead of being an absolute target (orientation is always absolute). Rejected if the target is outside the arm's reach, would self-collide, or is near a kinematic singularity. Returns immediately; use wait_for_arm to block until it arrives.",
+    parameters: Type.Object({
+      ...PoseFields,
+      relative: Type.Optional(Type.Boolean({ description: "If true, (x, y, z) is added to the current end-effector position" })),
+    }),
     async execute(toolCallId, params, signal) {
       return jsonResult(await callSim("/move_to_pose", "POST", { ...params, command_id: toolCallId }, signal));
     },
@@ -127,9 +144,25 @@ export default function (pi: ExtensionAPI) {
     label: "Preview Move To Pose",
     description:
       "Check whether move_to_pose with these parameters would succeed (reachable, no self-collision, no near-singular pose) WITHOUT actually moving the arm. Use before a move you're unsure about.",
-    parameters: Type.Object(PoseFields),
+    parameters: Type.Object({
+      ...PoseFields,
+      relative: Type.Optional(Type.Boolean({ description: "If true, (x, y, z) is added to the current end-effector position" })),
+    }),
     async execute(_toolCallId, params, signal) {
       return jsonResult(await callSim("/preview_move_to_pose", "POST", params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "move_trajectory",
+    label: "Move Trajectory",
+    description:
+      "Move the end effector through a sequence of poses, in order, waiting for each to be reached before starting the next. Stops at the first waypoint that's unreachable, self-colliding, or near-singular rather than skipping it — check the per-waypoint result to see how far it got.",
+    parameters: Type.Object({
+      waypoints: Type.Array(Type.Object(PoseFields), { description: "Poses to visit in order" }),
+    }),
+    async execute(toolCallId, params, signal) {
+      return jsonResult(await callSim("/move_trajectory", "POST", { ...params, command_id: toolCallId }, signal));
     },
   });
 
@@ -174,10 +207,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "stop_arm",
     label: "Stop Arm",
-    description: "Immediately halt all joint motion, holding each joint at its current position. Use this to cancel an in-flight move.",
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, signal) {
-      return jsonResult(await callSim("/stop", "POST", undefined, signal));
+    description:
+      "Immediately halt joint motion, holding each affected joint at its current position. Use this to cancel an in-flight move. Omit joint_ids to stop the whole arm; pass specific joint_ids to stop only those joints while others keep moving.",
+    parameters: Type.Object({
+      joint_ids: Type.Optional(Type.Array(Type.Integer(), { description: "Only stop these joints; omit to stop all joints" })),
+    }),
+    async execute(_toolCallId, params, signal) {
+      return jsonResult(await callSim("/stop", "POST", params, signal));
     },
   });
 

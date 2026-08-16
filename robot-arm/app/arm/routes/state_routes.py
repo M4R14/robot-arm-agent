@@ -3,8 +3,8 @@
 from fastapi import APIRouter
 
 from ..arm_service import ArmService
-from ..schemas import HealthResponse, StateResponse, WaitReachedRequest, WaitReachedResponse
-from ..support.presenters import build_joint_states
+from ..schemas import HealthResponse, LastError, StateResponse, WaitReachedRequest, WaitReachedResponse
+from ..support.presenters import build_joint_states, build_summary
 
 
 def build_router(service: ArmService) -> APIRouter:
@@ -16,8 +16,15 @@ def build_router(service: ArmService) -> APIRouter:
 
     @router.get("/state", response_model=StateResponse)
     def state() -> StateResponse:
-        joints, ee_position, targets = service.get_state()
-        return StateResponse(joints=build_joint_states(service, joints, targets), end_effector_position=ee_position)
+        joints, ee_position, targets, last_error = service.get_state()
+        joint_states = build_joint_states(service, joints, targets)
+        return StateResponse(
+            joints=joint_states,
+            end_effector_position=ee_position,
+            grip_force=service.grip_force,
+            last_error=LastError(**last_error) if last_error else None,
+            summary=build_summary(joint_states, service.grip_force, last_error),
+        )
 
     @router.post("/wait_reached", response_model=WaitReachedResponse)
     def wait_reached(req: WaitReachedRequest) -> WaitReachedResponse:
