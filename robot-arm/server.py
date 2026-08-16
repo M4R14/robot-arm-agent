@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.arm.arm_module import router, service
+from app.arm.adapters.driving.http.app_router import router
+from app.arm.adapters.driving.http.dependencies import service
 
 
 @asynccontextmanager

@@ -101,20 +101,20 @@ as code.
 | POST   | `/reset`               | — | `{ ok: bool, message: str }` | reset simulation to `HOME_POSE_DEG`; also clears `/rejected_history` |
 | GET    | `/rejected_history`    | — | `{ entries: [{error_code, message, details}] }` | read-only; last `REJECTED_HISTORY_MAX` (10) rejected commands, oldest first, so a caller can check what it already tried before repeating a mistake |
 | GET    | `/error_recovery_hints`| — | `{ hints: {error_code: str} }` | read-only; static, structured recovery guidance per `error_code` — single-sourced here rather than duplicated in caller instructions |
-| GET    | `/metrics`             | — | `{ accepted: int, rejected: int, rejected_by_code: {error_code: int}, rejection_rate: float }` | read-only; in-memory running counters (`support/metrics.py`), reset to zero on container restart (a tally, not a record — unlike `/rejected_history` and pose memory, nothing about it needs to survive one). **Not part of §5.3's agent tool set** — human-debugging only, same "not read by any LLM" carve-out as the agent side's `run_history.jsonl`; never called by the extension or orchestrator |
+| GET    | `/metrics`             | — | `{ accepted: int, rejected: int, rejected_by_code: {error_code: int}, rejection_rate: float }` | read-only; in-memory running counters (`adapters/driven/metrics.py`), reset to zero on container restart (a tally, not a record — unlike `/rejected_history` and pose memory, nothing about it needs to survive one). **Not part of §5.3's agent tool set** — human-debugging only, same "not read by any LLM" carve-out as the agent side's `run_history.jsonl`; never called by the extension or orchestrator |
 
 All mutating endpoints accept an optional `command_id: str`; a repeated
 `command_id` within a short TTL replays the cached response instead of
-re-executing (idempotency for caller retries) — `support/idempotency_cache.py`
+re-executing (idempotency for caller retries) — `adapters/driven/idempotency_cache.py`
 is `cachetools.TTLCache` under the hood, not a hand-rolled dict+eviction
 loop. Every accept/reject also logs via `loguru`
-(`support/metrics.py`/`arm_service.py`'s `_note_error`/`_note_success`,
+(`adapters/driven/metrics.py`/`application/arm_service.py`'s `_note_error`/`_note_success`,
 the same choke point `/rejected_history` and `/metrics` are populated
 from) — `docker compose logs sim` now shows structured
 `command rejected: <error_code> — <message>` /
 `command accepted` lines, not just uvicorn's own access log.
 
-A hand-rolled cooldown (`support/rate_limiter.py`, rejects a mutating
+A hand-rolled cooldown (`domain/rate_limiter.py`, rejects a mutating
 call within `MIN_COMMAND_INTERVAL_S` of the last one) was evaluated
 against `pyrate_limiter` and kept as-is: `pyrate_limiter`'s `Rate`/
 `Limiter` are built around window/bucket rate limiting (N requests per

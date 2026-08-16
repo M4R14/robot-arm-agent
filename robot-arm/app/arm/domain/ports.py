@@ -26,6 +26,16 @@ class JointAngle:
     applied_torque: float
 
 
+@dataclass
+class PoseFact:
+    x: float
+    y: float
+    z: float
+    outcome: str  # "ok" | "rejected"
+    error_code: Optional[str]
+    recorded_at: float
+
+
 class ArmPhysicsPort(Protocol):
     """Everything the domain needs from a robot-arm physics backend.
     Mirrors PyBulletAdapter's public interface exactly — extracted here
@@ -56,4 +66,4 @@ class PoseMemoryPort(Protocol):
     changing at all."""
 
     def record(self, position: List[float], outcome: str, error_code: Optional[str]) -> None: ...
-    def lookup_near(self, position: List[float], radius_m: float = ...) -> Optional[object]: ...
+    def lookup_near(self, position: List[float], radius_m: float = ...) -> Optional[PoseFact]: ...
