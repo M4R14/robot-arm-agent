@@ -17,9 +17,10 @@ from ..adapters.driven.idempotency_cache import IdempotencyCache
 from ..adapters.driven.metrics import Metrics
 from ..adapters.driven.pose_memory import PoseMemory
 from ..adapters.driven.pybullet_physics_adapter import PyBulletAdapter
-from ..constants import DEFAULT_WAIT_TIMEOUT_S, HOME_POSE_DEG, MAX_FORCE, RESET_SETTLE_STEPS
+from ..constants import DEFAULT_WAIT_TIMEOUT_S, MAX_FORCE
 from ..domain.capabilities_queries import CapabilitiesQueries
 from ..domain.joint_commands import JointCommands
+from ..domain.lifecycle_commands import LifecycleCommands
 from ..domain.macro_commands import MacroCommands
 from ..domain.motion_driver import SynchronizedMotionDriver
 from ..domain.motion_validator import MotionValidator
@@ -62,18 +63,9 @@ class ArmService:
         self._macro_commands = MacroCommands(
             self._lock, self._rate_limiter, self._pose_commands, self.wait_reached, self._grip_locked
         )
-        self._target_angles_deg: Dict[int, float] = {}
+        self._lifecycle = LifecycleCommands(self._adapter)
+        self._target_angles_deg: Dict[int, float] = self._lifecycle.drive_to_home_pose_locked()
         self.grip_force = 0.0
-        self._drive_to_home_pose()
-
-    def _drive_to_home_pose(self) -> None:
-        if not HOME_POSE_DEG:
-            return
-        for joint_id, target_deg in HOME_POSE_DEG.items():
-            self._adapter.set_joint_target_deg(joint_id, target_deg)
-        for _ in range(RESET_SETTLE_STEPS):
-            self._adapter.step()
-        self._target_angles_deg = dict(HOME_POSE_DEG)
 
     def start_stepping(self) -> None:
         self._stepping_clock.start()
@@ -94,19 +86,20 @@ class ArmService:
     def get_metrics(self) -> Dict:
         return self._outcome.get_metrics()
 
-    # --- guarded-command helper -----------------------------------------------
-    # Every mutating command needs "acquire lock, check rate limit, run" —
-    # this factors that out so each command method states only what it does.
-    # Recording success/failure is CommandOutcomeTracker.guarded(); kept
-    # separate because a few commands (pick_and_place, move_trajectory) need
-    # custom locking — multiple locked sections with unlocked work between
-    # them — so they use _outcome.guarded() alone and call
-    # _locked_rate_limited() themselves where it fits.
+    # --- guarded-command helpers ------------------------------------------------
+    # Every single-call mutating command needs "acquire lock, check rate
+    # limit, run, record success/failure" — _run() is that whole wrapper.
+    # A few commands (pick_and_place, move_trajectory) need custom locking
+    # instead — multiple locked sections with unlocked work between them —
+    # so they compose _locked_rate_limited()/_outcome.guarded() themselves.
 
     def _locked_rate_limited(self, fn):
         with self._lock:
             self._rate_limiter.check()
             return fn()
+
+    def _run(self, fn):
+        return self._outcome.guarded(lambda: self._locked_rate_limited(fn))
 
     # --- reads (delegated to StateQueries, plus the outcome tracker's
     # last_error which StateQueries doesn't know about) ---------------------
@@ -137,10 +130,8 @@ class ArmService:
     # --- move_joint (delegated to JointCommands) ------------------------------
 
     def move_joint(self, joint_id: int, target_angle_deg: float, relative: bool = False) -> float:
-        return self._outcome.guarded(
-            lambda: self._locked_rate_limited(
-                lambda: self._joint_commands.move_joint_locked(joint_id, target_angle_deg, relative, self._target_angles_deg)
-            )
+        return self._run(
+            lambda: self._joint_commands.move_joint_locked(joint_id, target_angle_deg, relative, self._target_angles_deg)
         )
 
     def preview_move_joint(
@@ -152,10 +143,8 @@ class ArmService:
     # --- move_joints (batch, delegated to JointCommands) -----------------------
 
     def move_joints(self, targets: List[Tuple[int, float]], relative: bool = False) -> Dict[int, float]:
-        return self._outcome.guarded(
-            lambda: self._locked_rate_limited(
-                lambda: self._joint_commands.move_joints_locked(targets, relative, self._target_angles_deg)
-            )
+        return self._run(
+            lambda: self._joint_commands.move_joints_locked(targets, relative, self._target_angles_deg)
         )
 
     # --- move_to_pose (delegated to PoseCommands) -------------------------------
@@ -170,11 +159,9 @@ class ArmService:
         yaw_deg: Optional[float] = None,
         relative: bool = False,
     ) -> None:
-        self._outcome.guarded(
-            lambda: self._locked_rate_limited(
-                lambda: self._pose_commands.move_to_pose_locked(
-                    x, y, z, roll_deg, pitch_deg, yaw_deg, relative, self._target_angles_deg
-                )
+        self._run(
+            lambda: self._pose_commands.move_to_pose_locked(
+                x, y, z, roll_deg, pitch_deg, yaw_deg, relative, self._target_angles_deg
             )
         )
 
@@ -244,7 +231,7 @@ class ArmService:
         return clamped_force
 
     def grip(self, force: float) -> float:
-        return self._outcome.guarded(lambda: self._locked_rate_limited(lambda: self._grip_locked(force)))
+        return self._run(lambda: self._grip_locked(force))
 
     # --- pick_and_place (delegated to MacroCommands) ----------------------------
 
@@ -268,10 +255,7 @@ class ArmService:
 
     def reset(self) -> None:
         with self._lock:
-            self._adapter.load()
-            for _ in range(RESET_SETTLE_STEPS):
-                self._adapter.step()
-            self._target_angles_deg.clear()
+            self._lifecycle.reset_locked()
+            self._target_angles_deg = self._lifecycle.drive_to_home_pose_locked()
             self.grip_force = 0.0
-            self._drive_to_home_pose()
         self._outcome.clear()

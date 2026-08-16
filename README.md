@@ -338,7 +338,9 @@ ai-arm/
 │           │     ├── macro_commands.py   pick_and_place — multi-step orchestration
 │           │     │                         across pose moves + grip, own lock re-entry
 │           │     ├── state_queries.py, capabilities_queries.py   (per-resource reads)
-│           │     └── stepping_clock.py   background physics-step thread lifecycle
+│           │     ├── stepping_clock.py   background physics-step thread lifecycle
+│           │     └── lifecycle_commands.py   drive-to-home-pose (startup + reset),
+│           │                                   URDF reload on reset
 │           ├── application/
 │           │     ├── arm_service.py   the one place ports get bound to concrete
 │           │     │                      driven adapters; lock + rate-limit wrapper
