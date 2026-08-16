@@ -101,10 +101,32 @@ as code.
 | POST   | `/reset`               | — | `{ ok: bool, message: str }` | reset simulation to `HOME_POSE_DEG`; also clears `/rejected_history` |
 | GET    | `/rejected_history`    | — | `{ entries: [{error_code, message, details}] }` | read-only; last `REJECTED_HISTORY_MAX` (10) rejected commands, oldest first, so a caller can check what it already tried before repeating a mistake |
 | GET    | `/error_recovery_hints`| — | `{ hints: {error_code: str} }` | read-only; static, structured recovery guidance per `error_code` — single-sourced here rather than duplicated in caller instructions |
+| GET    | `/metrics`             | — | `{ accepted: int, rejected: int, rejected_by_code: {error_code: int}, rejection_rate: float }` | read-only; in-memory running counters (`support/metrics.py`), reset to zero on container restart (a tally, not a record — unlike `/rejected_history` and pose memory, nothing about it needs to survive one). **Not part of §5.3's agent tool set** — human-debugging only, same "not read by any LLM" carve-out as the agent side's `run_history.jsonl`; never called by the extension or orchestrator |
 
 All mutating endpoints accept an optional `command_id: str`; a repeated
 `command_id` within a short TTL replays the cached response instead of
-re-executing (idempotency for caller retries).
+re-executing (idempotency for caller retries) — `support/idempotency_cache.py`
+is `cachetools.TTLCache` under the hood, not a hand-rolled dict+eviction
+loop. Every accept/reject also logs via `loguru`
+(`support/metrics.py`/`arm_service.py`'s `_note_error`/`_note_success`,
+the same choke point `/rejected_history` and `/metrics` are populated
+from) — `docker compose logs sim` now shows structured
+`command rejected: <error_code> — <message>` /
+`command accepted` lines, not just uvicorn's own access log.
+
+A hand-rolled cooldown (`support/rate_limiter.py`, rejects a mutating
+call within `MIN_COMMAND_INTERVAL_S` of the last one) was evaluated
+against `pyrate_limiter` and kept as-is: `pyrate_limiter`'s `Rate`/
+`Limiter` are built around window/bucket rate limiting (N requests per
+window), and its default `try_acquire` blocks the calling thread until a
+slot frees up rather than rejecting immediately — wrong shape for this
+service (a request thread blocking would stall `ArmService`'s single
+lock for every other caller, not just the one being rate-limited) and
+for the exact-`retry_after_s` contract `RATE_LIMITED` already promises
+callers. `blocking=False` gets closer but still doesn't expose a clean
+remaining-cooldown value without extra plumbing. The existing 20-line
+class is simple, correct, and already covered by this project's
+extensive live testing — not worth the fit mismatch.
 
 Error responses use `{ detail: { error_code: str, message: str, ...details } }`
 with `error_code` one of `JOINT_OUT_OF_RANGE`, `UNREACHABLE_POSE`,

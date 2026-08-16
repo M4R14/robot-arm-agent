@@ -17,6 +17,8 @@ import time
 from dataclasses import asdict, dataclass
 from typing import List, Optional
 
+from loguru import logger
+
 from ..constants import POSE_MEMORY_LOOKUP_RADIUS_M, POSE_MEMORY_MAX_FACTS, POSE_MEMORY_PATH, URDF_PATH
 
 
@@ -54,7 +56,7 @@ class PoseMemory:
             with open(self._path, "w") as f:
                 json.dump({"urdf_path": URDF_PATH, "facts": [asdict(fact) for fact in self._facts]}, f)
         except OSError as exc:
-            print(f"pose memory: failed to persist ({exc}); continuing in-memory only for this run")
+            logger.warning("pose memory: failed to persist ({}); continuing in-memory only for this run", exc)
 
     def record(self, position: List[float], outcome: str, error_code: Optional[str]) -> None:
         self._facts.append(

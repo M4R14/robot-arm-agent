@@ -272,6 +272,18 @@ at `/root/.pi/agent/settings.json`, so it applies without a project-trust
 prompt) and set the matching key in `.env`. No changes to `robot-arm/` or
 `ai-agent/extensions/robot-arm-extension/` are needed.
 
+## Debugging `sim` directly
+
+`docker compose logs sim` shows structured `command rejected: <error_code>
+— <message>` / `command accepted` lines (via `loguru`) alongside uvicorn's
+own access log — not just HTTP status codes. `GET /metrics` (not part of
+the agent's tool set, human-debugging only) returns running
+accepted/rejected counters since the container started:
+
+```bash
+docker compose exec sim python3 -c "import requests; print(requests.get('http://localhost:8000/metrics').json())"
+```
+
 ## Verifying isolation
 
 ```bash
@@ -314,19 +326,25 @@ ai-arm/
 │                              the arm needs lives here
 │           ├── arm_module.py   composition root — builds ArmService, wires
 │           │                    the routers below into one router
-│           ├── arm_service.py  coordinates the support/ collaborators
+│           ├── arm_service.py  thin coordinator: lock, lifecycle, rate-limit/
+│           │                    error-recording wrapper around each command,
+│           │                    delegates the actual logic to support/
 │           ├── constants.py    safety limits, URDF path
 │           ├── schemas.py      pydantic request/response models
 │           ├── adapters/       raw PyBullet calls, no domain rules
 │           ├── routes/         one file per resource area: state_routes.py,
 │           │                    joint_routes.py, pose_routes.py,
 │           │                    gripper_routes.py, macro_routes.py,
-│           │                    safety_routes.py
+│           │                    safety_routes.py, metrics_routes.py
 │           └── support/        single-purpose collaborators used by both
 │                                arm_service.py and routes/: exceptions.py,
-│                                rate_limiter.py, idempotency_cache.py,
-│                                motion_validator.py, motion_driver.py,
-│                                error_mapping.py, idempotency.py, presenters.py
+│                                rate_limiter.py, idempotency_cache.py (cachetools
+│                                TTLCache), metrics.py, motion_validator.py,
+│                                motion_driver.py, joint_commands.py (joint-space
+│                                move logic), pose_commands.py (Cartesian move/IK
+│                                logic), state_queries.py (reads, wait_reached,
+│                                capabilities), error_mapping.py, idempotency.py,
+│                                presenters.py
 └── ai-agent/              agent — Container B
     ├── Dockerfile
     ├── package.json

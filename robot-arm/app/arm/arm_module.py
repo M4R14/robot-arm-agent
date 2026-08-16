@@ -13,6 +13,7 @@ from .routes import (
     gripper_routes,
     joint_routes,
     macro_routes,
+    metrics_routes,
     pose_routes,
     safety_routes,
     state_routes,
@@ -30,3 +31,4 @@ router.include_router(trajectory_routes.build_router(service))
 router.include_router(gripper_routes.build_router(service))
 router.include_router(macro_routes.build_router(service))
 router.include_router(safety_routes.build_router(service))
+router.include_router(metrics_routes.build_router(service))

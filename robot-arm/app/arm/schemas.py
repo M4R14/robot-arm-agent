@@ -185,6 +185,13 @@ class ErrorRecoveryHintsResponse(BaseModel):
     hints: Dict[str, str]
 
 
+class MetricsResponse(BaseModel):
+    accepted: int
+    rejected: int
+    rejected_by_code: Dict[str, int]
+    rejection_rate: float
+
+
 class PreviewCandidatesRequest(BaseModel):
     candidates: List[PoseTarget]
 
