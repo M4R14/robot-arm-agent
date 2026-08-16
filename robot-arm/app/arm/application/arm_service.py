@@ -1,13 +1,13 @@
 """Application/use-case layer (Hexagonal / Ports & Adapters): coordinates
 domain collaborators — rate limiting, idempotency, validation, joint/pose
 command logic, state queries, and synchronized motion — around the arm
-physics port. Owns the sim lock, the physics stepping thread, and the
-shared mutable state (commanded joint targets, grip force, last error).
-Each collaborator has one job; this class's job is wiring them together
-(binding domain ports to concrete driven adapters — the only place that
-happens), applying the rate-limit/lock/error-recording wrapper every
-mutating command needs, and exposing the operations the HTTP driving
-adapter calls. Never trusts caller-supplied ranges.
+physics port. Owns the sim lock, the shared mutable state (commanded
+joint targets, grip force), and the rate-limit wrapper every mutating
+command needs, and exposes the operations the HTTP driving adapter
+calls. Every dependency arrives via constructor injection — the actual
+binding of domain ports to concrete driven adapters happens at the
+composition root, adapters/driving/http/dependencies.py, not here. Never
+trusts caller-supplied ranges.
 """
 
 import threading
@@ -44,9 +44,11 @@ class ArmService:
         metrics: Optional[Metrics] = None,
     ) -> None:
         self._lock = threading.Lock()
-        # Binding domain ports to concrete driven adapters happens here,
-        # and only here — nothing under domain/ imports these concrete
-        # classes.
+        # The real app always injects every dependency explicitly — see
+        # adapters/driving/http/dependencies.py, the actual composition
+        # root. The `or Default()` fallbacks below exist only so tests (or
+        # a REPL) can construct a working ArmService() with no wiring;
+        # nothing under domain/ imports these concrete classes itself.
         self._adapter = adapter or PyBulletAdapter()
         self._rate_limiter = rate_limiter or RateLimiter()
         self._validator = validator or MotionValidator(self._adapter, pose_memory or PoseMemory())

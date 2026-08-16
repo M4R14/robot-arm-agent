@@ -335,6 +335,8 @@ ai-arm/
 │           │     ├── exceptions.py     JointOutOfRangeError, UnreachablePoseError, ...
 │           │     ├── motion_validator.py, motion_driver.py, rate_limiter.py, util.py
 │           │     ├── joint_commands.py, pose_commands.py   (per-resource command logic)
+│           │     ├── macro_commands.py   pick_and_place — multi-step orchestration
+│           │     │                         across pose moves + grip, own lock re-entry
 │           │     ├── state_queries.py, capabilities_queries.py   (per-resource reads)
 │           │     └── stepping_clock.py   background physics-step thread lifecycle
 │           ├── application/
