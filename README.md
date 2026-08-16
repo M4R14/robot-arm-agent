@@ -324,32 +324,41 @@ ai-arm/
 │   └── app/
 │       └── arm/              single feature module (NestJS-style): everything
 │                              the arm needs lives here
-│           ├── arm_module.py   composition root — wires the routers below
-│           │                    into one router
+│           ├── arm_module.py   composition root — wires each domain's router
+│           │                    (domains/<name>/routes.py) into one router
 │           ├── dependencies.py   the single ArmService instance + get_service(),
 │           │                      FastAPI's own Depends() (not a new DI library —
 │           │                      the framework already in use has one)
 │           ├── arm_service.py  thin coordinator: lock, lifecycle, rate-limit/
 │           │                    error-recording wrapper around each command,
-│           │                    delegates the actual logic to support/
+│           │                    delegates the actual logic to domains/
 │           ├── constants.py    safety limits, URDF path
-│           ├── schemas.py      pydantic request/response models
+│           ├── common_schemas.py   only what's genuinely shared across domains
+│           │                        (ActionResponse, PoseTarget, PreviewResponse,
+│           │                        PreviouslyTried) — everything else lives in
+│           │                        its own domain
 │           ├── adapters/       raw PyBullet calls, no domain rules
-│           ├── routes/         one file per resource area, each route declaring
-│           │                    `service: ArmService = Depends(get_service)`
-│           │                    itself rather than a build_router(service) closure:
-│           │                    state_routes.py, joint_routes.py, pose_routes.py,
-│           │                    gripper_routes.py, macro_routes.py,
-│           │                    safety_routes.py, metrics_routes.py
-│           └── support/        single-purpose collaborators used by both
-│                                arm_service.py and routes/: exceptions.py,
+│           ├── domains/        one directory per resource area — routes.py +
+│           │                    schemas.py always, plus the domain's own command/
+│           │                    query logic where it has any:
+│           │     ├── joint/       routes.py, schemas.py, commands.py (JointCommands)
+│           │     ├── pose/        routes.py, schemas.py, commands.py (PoseCommands)
+│           │     ├── trajectory/  routes.py, schemas.py
+│           │     ├── gripper/     routes.py, schemas.py
+│           │     ├── macro/       routes.py, schemas.py
+│           │     ├── safety/      routes.py, schemas.py
+│           │     ├── state/       routes.py, schemas.py, queries.py (StateQueries —
+│           │     │                  "what is the arm doing right now")
+│           │     ├── capabilities/  routes.py, schemas.py, queries.py
+│           │     │                    (CapabilitiesQueries — "what can the arm do",
+│           │     │                    a different question from state/'s)
+│           │     └── metrics/     routes.py, schemas.py
+│           └── support/        collaborators with no single domain owner —
+│                                genuinely cross-cutting: exceptions.py,
 │                                rate_limiter.py, idempotency_cache.py (cachetools
 │                                TTLCache), metrics.py, motion_validator.py,
-│                                motion_driver.py, joint_commands.py (joint-space
-│                                move logic), pose_commands.py (Cartesian move/IK
-│                                logic), state_queries.py (reads, wait_reached,
-│                                capabilities), error_mapping.py, idempotency.py,
-│                                presenters.py
+│                                motion_driver.py, pose_memory.py, error_mapping.py,
+│                                idempotency.py, presenters.py
 └── ai-agent/              agent — Container B
     ├── Dockerfile
     ├── package.json

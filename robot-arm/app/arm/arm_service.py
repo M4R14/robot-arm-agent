@@ -24,14 +24,15 @@ from .constants import (
     RESET_SETTLE_STEPS,
     SIM_HZ,
 )
+from .domains.capabilities.queries import CapabilitiesQueries
+from .domains.joint.commands import JointCommands
+from .domains.pose.commands import PoseCommands
+from .domains.state.queries import StateQueries
 from .support.idempotency_cache import IdempotencyCache
-from .support.joint_commands import JointCommands
 from .support.metrics import Metrics
 from .support.motion_driver import SynchronizedMotionDriver
 from .support.motion_validator import MotionValidator
-from .support.pose_commands import PoseCommands
 from .support.rate_limiter import RateLimiter
-from .support.state_queries import StateQueries
 from .support.util import clamp
 
 
@@ -55,6 +56,7 @@ class ArmService:
         self._joint_commands = JointCommands(self._adapter, self._validator, self._driver)
         self._pose_commands = PoseCommands(self._adapter, self._validator, self._driver)
         self._state_queries = StateQueries(self._lock, self._adapter)
+        self._capabilities_queries = CapabilitiesQueries(self._lock, self._adapter)
         self._stop_stepping = threading.Event()
         self._target_angles_deg: Dict[int, float] = {}
         self._last_error: Optional[Dict[str, str]] = None
@@ -140,7 +142,7 @@ class ArmService:
         return self._state_queries.wait_reached(self._target_angles_deg, joint_ids, timeout_s)
 
     def get_capabilities(self) -> Dict:
-        return self._state_queries.get_capabilities()
+        return self._capabilities_queries.get_capabilities()
 
     def get_rejected_history(self) -> List[Dict]:
         with self._lock:

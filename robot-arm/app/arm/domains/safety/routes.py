@@ -4,9 +4,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import ActionResponse, StopRequest
+from ...arm_service import ArmService
+from ...common_schemas import ActionResponse
+from ...dependencies import get_service
+from .schemas import StopRequest
 
 router = APIRouter()
 

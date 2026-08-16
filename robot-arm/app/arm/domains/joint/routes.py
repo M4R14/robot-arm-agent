@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import ActionResponse, MoveJointRequest, MoveJointsRequest, PreviewMoveJointRequest, PreviewResponse
-from ..support.error_mapping import raise_http
-from ..support.exceptions import JointOutOfRangeError, NearSingularityError, RateLimitedError, SelfCollisionError
-from ..support.idempotency import with_idempotency
+from ...arm_service import ArmService
+from ...common_schemas import ActionResponse, PreviewResponse
+from ...dependencies import get_service
+from ...support.error_mapping import raise_http
+from ...support.exceptions import JointOutOfRangeError, NearSingularityError, RateLimitedError, SelfCollisionError
+from ...support.idempotency import with_idempotency
+from .schemas import MoveJointRequest, MoveJointsRequest, PreviewMoveJointRequest
 
 router = APIRouter()
 

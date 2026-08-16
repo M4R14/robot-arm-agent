@@ -6,10 +6,10 @@ all-or-nothing here.
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import MoveTrajectoryRequest, MoveTrajectoryResponse, WaypointResult
-from ..support.idempotency import with_idempotency
+from ...arm_service import ArmService
+from ...dependencies import get_service
+from ...support.idempotency import with_idempotency
+from .schemas import MoveTrajectoryRequest, MoveTrajectoryResponse, WaypointResult
 
 router = APIRouter()
 

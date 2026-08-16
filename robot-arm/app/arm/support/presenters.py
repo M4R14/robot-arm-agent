@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 from ..adapters.pybullet_adapter import JointAngle
 from ..arm_service import ArmService
-from ..schemas import JointState
+from ..domains.state.schemas import JointState
 
 
 def build_joint_states(service: ArmService, joints: List[JointAngle], targets: Dict[int, float]) -> List[JointState]:

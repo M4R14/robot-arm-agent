@@ -2,9 +2,10 @@
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import (
+from ...arm_service import ArmService
+from ...dependencies import get_service
+from ...support.presenters import build_joint_states, build_summary
+from .schemas import (
     HealthResponse,
     LastError,
     RejectedAttempt,
@@ -13,7 +14,6 @@ from ..schemas import (
     WaitReachedRequest,
     WaitReachedResponse,
 )
-from ..support.presenters import build_joint_states, build_summary
 
 router = APIRouter()
 

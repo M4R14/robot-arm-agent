@@ -2,12 +2,12 @@
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import PickAndPlaceRequest, PickAndPlaceResponse
-from ..support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
-from ..support.error_mapping import raise_http
-from ..support.idempotency import with_idempotency
+from ...arm_service import ArmService
+from ...dependencies import get_service
+from ...support.exceptions import NearSingularityError, RateLimitedError, SelfCollisionError, UnreachablePoseError
+from ...support.error_mapping import raise_http
+from ...support.idempotency import with_idempotency
+from .schemas import PickAndPlaceRequest, PickAndPlaceResponse
 
 router = APIRouter()
 

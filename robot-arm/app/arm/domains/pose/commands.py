@@ -8,11 +8,11 @@ the lock is already held where that matters).
 
 from typing import Dict, List, Optional, Tuple
 
-from ..adapters.pybullet_adapter import PyBulletAdapter
-from ..constants import POSE_TOWARD_LIMIT_COARSE_STEPS, POSE_TOWARD_LIMIT_REFINE_ITERATIONS
-from .motion_driver import SynchronizedMotionDriver
-from .motion_validator import MotionValidator
-from .pose_memory import PoseFact
+from ...adapters.pybullet_adapter import PyBulletAdapter
+from ...constants import POSE_TOWARD_LIMIT_COARSE_STEPS, POSE_TOWARD_LIMIT_REFINE_ITERATIONS
+from ...support.motion_driver import SynchronizedMotionDriver
+from ...support.motion_validator import MotionValidator
+from ...support.pose_memory import PoseFact
 
 
 def _fact_to_dict(fact: Optional[PoseFact]) -> Optional[Dict]:

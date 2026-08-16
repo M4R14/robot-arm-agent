@@ -2,12 +2,13 @@
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import ActionResponse, GripRequest
-from ..support.exceptions import RateLimitedError
-from ..support.error_mapping import raise_http
-from ..support.idempotency import with_idempotency
+from ...arm_service import ArmService
+from ...common_schemas import ActionResponse
+from ...dependencies import get_service
+from ...support.exceptions import RateLimitedError
+from ...support.error_mapping import raise_http
+from ...support.idempotency import with_idempotency
+from .schemas import GripRequest
 
 router = APIRouter()
 

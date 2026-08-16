@@ -5,9 +5,9 @@ otherwise just get silently clamped or rejected.
 
 from fastapi import APIRouter, Depends
 
-from ..arm_service import ArmService
-from ..dependencies import get_service
-from ..schemas import CapabilitiesResponse, ErrorRecoveryHintsResponse, JointLimit
+from ...arm_service import ArmService
+from ...dependencies import get_service
+from .schemas import CapabilitiesResponse, ErrorRecoveryHintsResponse, JointLimit
 
 router = APIRouter()
 

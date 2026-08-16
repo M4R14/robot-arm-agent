@@ -8,10 +8,10 @@ methods assume the lock is already held where that matters).
 
 from typing import Dict, List, Optional, Tuple
 
-from ..adapters.pybullet_adapter import PyBulletAdapter
-from ..support.exceptions import JointOutOfRangeError
-from .motion_driver import SynchronizedMotionDriver
-from .motion_validator import MotionValidator
+from ...adapters.pybullet_adapter import PyBulletAdapter
+from ...support.exceptions import JointOutOfRangeError
+from ...support.motion_driver import SynchronizedMotionDriver
+from ...support.motion_validator import MotionValidator
 
 
 class JointCommands:

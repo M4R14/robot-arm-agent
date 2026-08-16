@@ -1,27 +1,24 @@
 """Composition root for the arm feature module (NestJS-style: one module
-per feature, everything the arm needs — adapter, service, routes, support
-— lives under this package). Assembles the resource-scoped sub-routers;
-the single ArmService instance itself lives in dependencies.py (FastAPI's
-own `Depends()` — each route declares it, rather than this module
-threading a `service` parameter through every routes/*.py build_router()
-call). No route logic, error mapping, or DTO shaping lives here — each of
-those is one file with one job.
+per feature, everything the arm needs lives here). Assembles each
+domain's router into one; the single ArmService instance itself lives in
+dependencies.py (FastAPI's own Depends() — each domain route declares it
+directly, rather than this module threading a `service` parameter
+through every domain). No route logic, error mapping, or DTO shaping
+lives here — each of those belongs to its own domains/<name>/.
 """
 
 from fastapi import APIRouter
 
 from .dependencies import service
-from .routes import (
-    capabilities_routes,
-    gripper_routes,
-    joint_routes,
-    macro_routes,
-    metrics_routes,
-    pose_routes,
-    safety_routes,
-    state_routes,
-    trajectory_routes,
-)
+from .domains.capabilities import routes as capabilities_routes
+from .domains.gripper import routes as gripper_routes
+from .domains.joint import routes as joint_routes
+from .domains.macro import routes as macro_routes
+from .domains.metrics import routes as metrics_routes
+from .domains.pose import routes as pose_routes
+from .domains.safety import routes as safety_routes
+from .domains.state import routes as state_routes
+from .domains.trajectory import routes as trajectory_routes
 
 router = APIRouter()
 router.include_router(state_routes.router)
